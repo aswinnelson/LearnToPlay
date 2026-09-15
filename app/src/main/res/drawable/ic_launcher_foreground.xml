@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Open book, centered in the adaptive-icon safe zone -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,38
+            C48,33 38,30 29,30
+            C27.3,30 26,31.3 26,33
+            L26,71
+            C26,72.7 27.3,74 29,74
+            C38,74 48,77 54,82
+            C60,77 70,74 79,74
+            C80.7,74 82,72.7 82,71
+            L82,33
+            C82,31.3 80.7,30 79,30
+            C70,30 60,33 54,38
+            Z" />
+
+    <!-- Spine + page-fold shading so the two halves of the book read clearly -->
+    <path
+        android:fillColor="#1565C0"
+        android:fillAlpha="0.25"
+        android:pathData="M54,38 L54,82 C48,77 38,74 29,74 C27.3,74 26,72.7 26,71 L26,33 C26,31.3 27.3,30 29,30 C38,30 48,33 54,38 Z" />
+</vector>
