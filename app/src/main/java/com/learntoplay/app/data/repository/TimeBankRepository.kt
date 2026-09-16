@@ -34,4 +34,11 @@ class TimeBankRepository(private val db: AppDatabase) {
 
     suspend fun getBalanceSeconds(): Long =
         db.adminSettingsDao().getOnce()?.timeBankSecondsRemaining ?: 0L
+
+    /** Parent override from the Admin Dashboard's Time Bank card. Writes straight to the
+     * same row the tracker service ticks down and the child's Home screen observes, so an
+     * edit mid-session takes effect on the very next tick without racing it. */
+    suspend fun setBalanceSeconds(seconds: Long) {
+        db.adminSettingsDao().setTimeBankSeconds(maxOf(0L, seconds))
+    }
 }

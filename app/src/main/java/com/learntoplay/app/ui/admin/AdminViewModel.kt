@@ -8,6 +8,7 @@ import com.learntoplay.app.data.repository.AdminRepository
 import com.learntoplay.app.data.repository.QuizRepository
 import com.learntoplay.app.data.repository.TimeBankRepository
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /** A quiz attempt paired with a human-readable label, for the history screen — the raw
@@ -28,6 +29,13 @@ class AdminViewModel(private val db: AppDatabase) : ViewModel() {
 
     val gatedApps = adminRepo.observeGatedApps()
     val curricula = db.curriculumDao().observeAll()
+
+    /** Live remaining time-bank balance in whole minutes, for the Admin Dashboard's
+     * "Time Bank" card. Backed by the same reactive Room Flow the child's Home screen
+     * reads and the tracker service ticks down, so a parent edit and an in-progress
+     * countdown never clobber each other — each just reads-then-writes the current row. */
+    val timeBankMinutesRemaining = timeBankRepo.observeBalanceSeconds()
+        .map { ((it?.timeBankSecondsRemaining ?: 0L) / 60L).toInt() }
 
     val quizHistory = combine(quizRepo.observeHistory(), curricula) { results, allCurricula ->
         val labelsById = allCurricula.associateBy({ it.id }, { "${it.subject} — ${it.chapterTitle}" })
@@ -56,4 +64,11 @@ class AdminViewModel(private val db: AppDatabase) : ViewModel() {
 
     fun saveScoreTimeRules(rules: List<ScoreTimeRuleEntity>) =
         viewModelScope.launch { timeBankRepo.setRules(rules) }
+
+    /** Directly overrides the child's remaining play time, in minutes. Applied immediately —
+     * reflected on the child's Home screen right away, and on the tracker service's very
+     * next one-second tick if a gated-app session is in progress. */
+    fun setTimeBankMinutes(minutes: Int) = viewModelScope.launch {
+        timeBankRepo.setBalanceSeconds(minutes.coerceAtLeast(0).toLong() * 60L)
+    }
 }

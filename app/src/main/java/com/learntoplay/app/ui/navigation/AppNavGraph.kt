@@ -70,6 +70,7 @@ fun AppNavGraph(
         }
         composable(Routes.ADMIN_DASHBOARD) {
             AdminDashboardScreen(
+                adminViewModel = adminViewModel,
                 onManageCurriculum = { navController.navigate(Routes.ADMIN_CURRICULUM) },
                 onManageScoreTimeRules = { navController.navigate(Routes.ADMIN_SCORE_TIME) },
                 onManageGatedApps = { navController.navigate(Routes.ADMIN_GATED_APPS) },
