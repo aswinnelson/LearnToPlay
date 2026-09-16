@@ -11,15 +11,17 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.learntoplay.app.ai.QuestionAiGenerator
 import com.learntoplay.app.data.db.entities.QuestionEntity
 import com.learntoplay.app.util.rememberPhotoScanLauncher
+import kotlinx.coroutines.launch
 
 /** Parent-facing question bank for one curriculum: add, edit, or remove multiple-choice
- * questions — either typed by hand, or started from a photo of a textbook/worksheet page
- * (Stage C: on-device OCR pre-fills the prompt field with the recognized text, which the
- * parent then reviews, trims, and corrects — the photo/OCR pass is a starting point, not an
- * unsupervised auto-fill). */
+ * questions — typed by hand, started from a photo of a textbook/worksheet page (Stage C OCR),
+ * and/or drafted with on-device AI (Stage: AI question generation). Every path lands in the
+ * same review form; nothing is saved to the question bank without the parent tapping Save. */
 @Composable
 fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBack: () -> Unit) {
     val questions by viewModel.observeQuestionsForCurriculum(curriculumId).collectAsState(initial = emptyList())
@@ -135,6 +137,11 @@ private fun QuestionEditDialog(
     var optionD by remember { mutableStateOf(existing?.optionD ?: "") }
     var correctOption by remember { mutableStateOf(existing?.correctOption ?: "A") }
 
+    var aiBusy by remember { mutableStateOf(false) }
+    var aiError by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
     val isValid = prompt.isNotBlank() && optionA.isNotBlank() && optionB.isNotBlank() &&
         optionC.isNotBlank() && optionD.isNotBlank()
 
@@ -142,7 +149,7 @@ private fun QuestionEditDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (existing == null) "Add Question" else "Edit Question") },
         text = {
-            Column(Modifier.heightIn(max = 480.dp)) {
+            Column(Modifier.heightIn(max = 520.dp)) {
                 if (scannedText != null) {
                     Text(
                         "Recognized from your photo — trim it down to just the question, fix " +
@@ -156,13 +163,52 @@ private fun QuestionEditDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(8.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        enabled = prompt.isNotBlank() && !aiBusy,
+                        onClick = {
+                            aiBusy = true
+                            aiError = null
+                            coroutineScope.launch {
+                                when (val result = QuestionAiGenerator.generateOptions(context, prompt)) {
+                                    is QuestionAiGenerator.Result.Success -> {
+                                        optionA = result.options[0]
+                                        optionB = result.options[1]
+                                        optionC = result.options[2]
+                                        optionD = result.options[3]
+                                        correctOption = "ABCD"[result.correctIndex].toString()
+                                    }
+                                    is QuestionAiGenerator.Result.Unavailable -> {
+                                        aiError = result.reason
+                                    }
+                                }
+                                aiBusy = false
+                            }
+                        }
+                    ) { Text(if (aiBusy) "Generating…" else "Generate options with AI") }
+                    if (aiBusy) {
+                        Spacer(Modifier.width(8.dp))
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    }
+                }
+                aiError?.let { message ->
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+
                 OptionRow("A", optionA, { optionA = it }, correctOption == "A") { correctOption = "A" }
                 OptionRow("B", optionB, { optionB = it }, correctOption == "B") { correctOption = "B" }
                 OptionRow("C", optionC, { optionC = it }, correctOption == "C") { correctOption = "C" }
                 OptionRow("D", optionD, { optionD = it }, correctOption == "D") { correctOption = "D" }
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Tap the circle next to the correct answer.",
+                    "Tap the circle next to the correct answer. AI-drafted options are a " +
+                        "starting point — always double-check them before saving.",
                     style = MaterialTheme.typography.labelSmall
                 )
             }

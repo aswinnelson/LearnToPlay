@@ -64,5 +64,12 @@ dependencies {
     // or text ever leaves the phone, consistent with the app's local-first design.
     implementation("com.google.mlkit:text-recognition:16.0.0")
 
+    // On-device LLM (MediaPipe LLM Inference API) that drafts multiple-choice options from a
+    // question's text. The model file itself (~500MB+, e.g. Gemma 3 1B) is NOT bundled here —
+    // it's pushed once via `adb push` to /data/local/tmp/llm/ on a test device and loaded from
+    // that fixed path, so no network call happens at build or run time for this dependency.
+    // Google's own docs note this doesn't reliably run on emulators — real-device only.
+    implementation("com.google.mediapipe:tasks-genai:0.10.27")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
