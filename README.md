@@ -42,6 +42,17 @@ from Settings.
   `TYPE_APPLICATION_OVERLAY` slightly differently) — test on a couple of physical devices
   before shipping.
 
+## Post-quiz flow (now fixed — was a real dead end)
+Passing the quiz used to leave the child sitting in Learn to Play with no obvious next step —
+just a "Done" button that returned to Child Home, still inside the app. `QuizScreen`'s
+completion state now shows the running time-bank total (not just what this attempt earned) and,
+if the parent has gated any apps, a "Play now" button per app. Tapping one calls
+`packageManager.getLaunchIntentForPackage()` and starts it directly — which naturally backgrounds
+Learn to Play, no extra "close this app" logic needed. If time was earned but nothing is gated
+yet, it falls back to a "Go to home screen" button (`Activity.moveTaskToBack`). Also fixed: the
+"no curriculum selected" state used to be a dead end reachable only via the system back button —
+it now has an explicit Back button.
+
 ## Other deliberately stubbed / TODO (flagged inline in code)
 - Installed-app picker — **now implemented.** `InstalledAppsProvider` queries launchable apps
   via `PackageManager` (scoped through a `<queries>` manifest declaration, not the broader

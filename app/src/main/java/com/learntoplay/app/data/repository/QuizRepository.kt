@@ -62,4 +62,11 @@ class QuizRepository(private val db: AppDatabase) {
     }
 
     fun observeHistory(): Flow<List<QuizResultEntity>> = db.quizResultDao().observeHistory()
+
+    /** The apps the child can now open — shown as "Play now" buttons right after a quiz that
+     * earned time, instead of leaving the child stuck in Learn to Play with no obvious next step. */
+    suspend fun getEnabledGatedApps() = db.gatedAppDao().getEnabledApps()
+
+    suspend fun getTimeBankMinutesRemaining(): Int =
+        ((db.adminSettingsDao().getOnce()?.timeBankSecondsRemaining ?: 0L) / 60L).toInt()
 }

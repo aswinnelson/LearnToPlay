@@ -15,6 +15,9 @@ interface GatedAppDao {
     @Query("SELECT packageName FROM gated_apps WHERE isEnabled = 1")
     suspend fun getEnabledPackageNames(): List<String>
 
+    @Query("SELECT * FROM gated_apps WHERE isEnabled = 1")
+    suspend fun getEnabledApps(): List<GatedAppEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(app: GatedAppEntity)
 
