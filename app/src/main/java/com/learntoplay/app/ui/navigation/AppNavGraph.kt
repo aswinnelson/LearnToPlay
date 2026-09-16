@@ -6,9 +6,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.ui.admin.*
 import com.learntoplay.app.ui.child.ChildHomeScreen
@@ -24,6 +26,7 @@ private object Routes {
     const val ADMIN_SCORE_TIME = "admin_score_time"
     const val ADMIN_GATED_APPS = "admin_gated_apps"
     const val ADMIN_HISTORY = "admin_history"
+    const val ADMIN_MANAGE_QUESTIONS = "admin_manage_questions"
 }
 
 /**
@@ -82,7 +85,22 @@ fun AppNavGraph(
             )
         }
         composable(Routes.ADMIN_CURRICULUM) {
-            CurriculumSelectScreen(adminViewModel) { navController.popBackStack() }
+            CurriculumSelectScreen(
+                viewModel = adminViewModel,
+                onManageQuestions = { curriculumId ->
+                    navController.navigate("${Routes.ADMIN_MANAGE_QUESTIONS}/$curriculumId")
+                },
+                onBack = { navController.popBackStack() }
+            )
+        }
+        composable(
+            route = "${Routes.ADMIN_MANAGE_QUESTIONS}/{curriculumId}",
+            arguments = listOf(navArgument("curriculumId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val curriculumId = backStackEntry.arguments?.getString("curriculumId")
+            if (curriculumId != null) {
+                ManageQuestionsScreen(adminViewModel, curriculumId) { navController.popBackStack() }
+            }
         }
         composable(Routes.ADMIN_SCORE_TIME) {
             ScoreTimeMappingScreen(adminViewModel) { navController.popBackStack() }

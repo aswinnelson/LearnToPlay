@@ -21,7 +21,7 @@ import com.learntoplay.app.data.db.entities.*
         GatedAppEntity::class,
         AdminSettingsEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -41,7 +41,14 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "learn_to_play.db"
-                ).build().also { INSTANCE = it }
+                )
+                    // Pre-MVP: no real Migration objects written yet. A schema bump (like the
+                    // question-stats columns added in v2 for smart selection) just recreates
+                    // the DB instead of crashing on a missing migration — fine while this is
+                    // local test data; write real migrations before any data a real pilot
+                    // family has entered needs to survive an update.
+                    .fallbackToDestructiveMigration()
+                    .build().also { INSTANCE = it }
             }
     }
 }

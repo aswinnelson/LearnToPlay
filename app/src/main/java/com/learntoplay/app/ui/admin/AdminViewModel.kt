@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.learntoplay.app.data.db.AppDatabase
+import com.learntoplay.app.data.db.entities.QuestionEntity
 import com.learntoplay.app.data.db.entities.ScoreTimeRuleEntity
 import com.learntoplay.app.data.repository.AdminRepository
 import com.learntoplay.app.data.repository.PinCheckResult
@@ -58,6 +59,18 @@ class AdminViewModel(private val db: AppDatabase, context: Context) : ViewModel(
     suspend fun verifyPin(pin: String): PinCheckResult = adminRepo.verifyPin(pin)
 
     fun selectCurriculum(id: String) = viewModelScope.launch { adminRepo.selectCurriculum(id) }
+
+    fun createCurriculum(board: String, grade: Int, subject: String, chapterTitle: String) =
+        viewModelScope.launch { adminRepo.createCurriculum(board, grade, subject, chapterTitle) }
+
+    fun observeQuestionsForCurriculum(curriculumId: String) =
+        adminRepo.observeQuestionsForCurriculum(curriculumId)
+
+    fun upsertQuestion(question: QuestionEntity) =
+        viewModelScope.launch { adminRepo.upsertQuestion(question) }
+
+    fun deleteQuestion(id: Long) =
+        viewModelScope.launch { adminRepo.deleteQuestion(id) }
 
     fun setAppGated(packageName: String, displayName: String, enabled: Boolean) =
         viewModelScope.launch { adminRepo.setAppGated(packageName, displayName, enabled) }

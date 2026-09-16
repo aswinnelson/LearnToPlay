@@ -3,8 +3,11 @@ package com.learntoplay.app.data.repository
 import android.content.Context
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.db.entities.AdminSettingsEntity
+import com.learntoplay.app.data.db.entities.CurriculumEntity
 import com.learntoplay.app.data.db.entities.GatedAppEntity
+import com.learntoplay.app.data.db.entities.QuestionEntity
 import com.learntoplay.app.util.PinHasher
+import java.util.UUID
 
 /** Result of a PIN check — plain Boolean used to hide whether the caller is locked out. */
 sealed interface PinCheckResult {
@@ -80,6 +83,33 @@ class AdminRepository(private val db: AppDatabase, context: Context) {
     suspend fun selectCurriculum(curriculumId: String) {
         db.curriculumDao().clearSelection()
         db.curriculumDao().select(curriculumId)
+    }
+
+    /** Creates a brand-new, parent-authored curriculum (ManageQuestionsScreen's questions then
+     * attach to it) — distinct from the bundled preset set seeded at first launch. */
+    suspend fun createCurriculum(board: String, grade: Int, subject: String, chapterTitle: String): String {
+        val id = UUID.randomUUID().toString()
+        db.curriculumDao().upsert(
+            CurriculumEntity(
+                id = id,
+                board = board,
+                grade = grade,
+                subject = subject,
+                chapterTitle = chapterTitle
+            )
+        )
+        return id
+    }
+
+    fun observeQuestionsForCurriculum(curriculumId: String) =
+        db.questionDao().observeForCurriculum(curriculumId)
+
+    suspend fun upsertQuestion(question: QuestionEntity) {
+        db.questionDao().upsert(question)
+    }
+
+    suspend fun deleteQuestion(id: Long) {
+        db.questionDao().delete(id)
     }
 
     companion object {

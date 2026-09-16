@@ -15,6 +15,11 @@ interface CurriculumDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(items: List<CurriculumEntity>)
 
+    /** Creates a parent-authored curriculum, distinct from the bundled preset set inserted via
+     * insertAll() at first launch (see PresetCurriculumSeed / LearnToPlayApp.seedIfEmpty()). */
+    @Upsert
+    suspend fun upsert(curriculum: CurriculumEntity)
+
     @Query("UPDATE curricula SET isSelectedByAdmin = 0")
     suspend fun clearSelection()
 

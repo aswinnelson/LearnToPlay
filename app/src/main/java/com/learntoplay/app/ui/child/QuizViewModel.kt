@@ -62,6 +62,11 @@ class QuizViewModel(private val db: AppDatabase) : ViewModel() {
         val nextIndex = s.currentIndex + 1
         val nextCorrect = s.correctCount + if (isCorrect) 1 else 0
 
+        // Recorded as its own launch, independent of quiz completion below, so the question's
+        // selection-weighting stats (see QuizRepository.getQuizQuestions) update right away
+        // rather than only if the child finishes the whole quiz.
+        viewModelScope.launch { quizRepo.recordAnswer(question.id, isCorrect) }
+
         if (nextIndex < s.questions.size) {
             _state.value = s.copy(currentIndex = nextIndex, correctCount = nextCorrect)
         } else {
