@@ -13,6 +13,12 @@
          simply skipped rather than crashing. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- The "scan a textbook photo" question-entry flow delegates to the device's own camera
+         app (ActivityResultContracts.TakePicture), so no android.permission.CAMERA is needed —
+         only that a camera exists, and even that's optional so the app still installs on
+         camera-less devices/emulators. -->
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
     <!-- Scoped visibility for the Gated Apps picker (InstalledAppsProvider): only sees
          apps that declare a launcher activity, same as the home-screen app drawer. This
          replaces the broader QUERY_ALL_PACKAGES special permission, which needs a Play
@@ -21,6 +27,11 @@
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!-- Lets the TakePicture contract resolve the system camera app on API 30+, where
+             package visibility is restricted by default. -->
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
         </intent>
     </queries>
 
@@ -61,6 +72,19 @@
             android:name=".service.TimeBankTrackerService"
             android:exported="false"
             android:foregroundServiceType="specialUse" />
+
+        <!-- Hands a content:// Uri (instead of a raw file:// path) to the system camera app
+             for the "scan a textbook photo" flow, scoped to just the scanned_questions/
+             cache folder. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 </manifest>

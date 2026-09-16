@@ -59,5 +59,10 @@ dependencies {
     // Security (PIN hashing)
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
+    // On-device text recognition for the "scan a textbook photo" question-entry flow
+    // (Stage C). Runs entirely on-device via a bundled/auto-downloaded model — no image
+    // or text ever leaves the phone, consistent with the app's local-first design.
+    implementation("com.google.mlkit:text-recognition:16.0.0")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

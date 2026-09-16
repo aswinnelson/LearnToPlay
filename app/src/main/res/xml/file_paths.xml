@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Matches the cacheDir/scanned_questions/ folder PhotoScanCapture writes captured
+         photos into — temporary scratch space for OCR, not meant to persist. -->
+    <cache-path name="scanned_questions" path="scanned_questions/" />
+</paths>

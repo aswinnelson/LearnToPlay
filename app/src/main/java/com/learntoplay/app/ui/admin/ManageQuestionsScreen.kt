@@ -13,17 +13,28 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.learntoplay.app.data.db.entities.QuestionEntity
+import com.learntoplay.app.util.rememberPhotoScanLauncher
 
 /** Parent-facing question bank for one curriculum: add, edit, or remove multiple-choice
- * questions. This is what makes "upload questions" real for the MVP — typed in here rather
- * than only the bundled preset. A future photo/OCR flow would land its best-effort extracted
- * text in this same edit dialog for the parent to review and correct, rather than trying to
- * fully automate parsing without any human check. */
+ * questions — either typed by hand, or started from a photo of a textbook/worksheet page
+ * (Stage C: on-device OCR pre-fills the prompt field with the recognized text, which the
+ * parent then reviews, trims, and corrects — the photo/OCR pass is a starting point, not an
+ * unsupervised auto-fill). */
 @Composable
 fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBack: () -> Unit) {
     val questions by viewModel.observeQuestionsForCurriculum(curriculumId).collectAsState(initial = emptyList())
     var editingQuestion by remember { mutableStateOf<QuestionEntity?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
+    var scannedText by remember { mutableStateOf<String?>(null) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    val launchScan = rememberPhotoScanLauncher(
+        onTextRecognized = { text ->
+            scannedText = text
+            showAddDialog = true
+        },
+        onError = { message -> errorMessage = message }
+    )
 
     Column(Modifier.fillMaxSize().padding(24.dp)) {
         Row(
@@ -32,15 +43,34 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Questions", style = MaterialTheme.typography.headlineSmall)
-            IconButton(onClick = { showAddDialog = true }) {
-                Icon(Icons.Default.Add, contentDescription = "Add question")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { launchScan() }) { Text("Scan Photo") }
+                IconButton(onClick = { scannedText = null; showAddDialog = true }) {
+                    Icon(Icons.Default.Add, contentDescription = "Add question")
+                }
             }
         }
+
+        errorMessage?.let { message ->
+            Spacer(Modifier.height(8.dp))
+            Card {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(message, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { errorMessage = null }) { Text("Dismiss") }
+                }
+            }
+        }
+
         Spacer(Modifier.height(16.dp))
 
         if (questions.isEmpty()) {
             Text(
-                "No questions yet. Tap + to add one — a handful is enough for a quiz to run.",
+                "No questions yet. Tap + to type one, or Scan Photo to start from a picture " +
+                    "of a textbook page — a handful is enough for a quiz to run.",
                 style = MaterialTheme.typography.bodyMedium
             )
         } else {
@@ -74,14 +104,16 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
         QuestionEditDialog(
             curriculumId = curriculumId,
             existing = null,
-            onSave = { viewModel.upsertQuestion(it); showAddDialog = false },
-            onDismiss = { showAddDialog = false }
+            scannedText = scannedText,
+            onSave = { viewModel.upsertQuestion(it); showAddDialog = false; scannedText = null },
+            onDismiss = { showAddDialog = false; scannedText = null }
         )
     }
     editingQuestion?.let { q ->
         QuestionEditDialog(
             curriculumId = curriculumId,
             existing = q,
+            scannedText = null,
             onSave = { viewModel.upsertQuestion(it); editingQuestion = null },
             onDismiss = { editingQuestion = null }
         )
@@ -92,10 +124,11 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
 private fun QuestionEditDialog(
     curriculumId: String,
     existing: QuestionEntity?,
+    scannedText: String?,
     onSave: (QuestionEntity) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var prompt by remember { mutableStateOf(existing?.prompt ?: "") }
+    var prompt by remember { mutableStateOf(existing?.prompt ?: scannedText ?: "") }
     var optionA by remember { mutableStateOf(existing?.optionA ?: "") }
     var optionB by remember { mutableStateOf(existing?.optionB ?: "") }
     var optionC by remember { mutableStateOf(existing?.optionC ?: "") }
@@ -110,6 +143,14 @@ private fun QuestionEditDialog(
         title = { Text(if (existing == null) "Add Question" else "Edit Question") },
         text = {
             Column(Modifier.heightIn(max = 480.dp)) {
+                if (scannedText != null) {
+                    Text(
+                        "Recognized from your photo — trim it down to just the question, fix " +
+                            "any misread words, then fill in the four options below.",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
                 OutlinedTextField(
                     prompt, { prompt = it }, label = { Text("Question") },
                     modifier = Modifier.fillMaxWidth()
