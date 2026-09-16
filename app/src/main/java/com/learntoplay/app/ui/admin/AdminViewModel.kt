@@ -1,10 +1,12 @@
 package com.learntoplay.app.ui.admin
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.db.entities.ScoreTimeRuleEntity
 import com.learntoplay.app.data.repository.AdminRepository
+import com.learntoplay.app.data.repository.PinCheckResult
 import com.learntoplay.app.data.repository.QuizRepository
 import com.learntoplay.app.data.repository.TimeBankRepository
 import kotlinx.coroutines.flow.combine
@@ -22,8 +24,8 @@ data class QuizHistoryRow(
     val takenAtEpochMillis: Long
 )
 
-class AdminViewModel(private val db: AppDatabase) : ViewModel() {
-    private val adminRepo = AdminRepository(db)
+class AdminViewModel(private val db: AppDatabase, context: Context) : ViewModel() {
+    private val adminRepo = AdminRepository(db, context)
     private val timeBankRepo = TimeBankRepository(db)
     private val quizRepo = QuizRepository(db)
 
@@ -53,7 +55,7 @@ class AdminViewModel(private val db: AppDatabase) : ViewModel() {
 
     suspend fun isPinSet() = adminRepo.isPinSet()
     suspend fun setPin(pin: String) = adminRepo.setPin(pin)
-    suspend fun verifyPin(pin: String) = adminRepo.verifyPin(pin)
+    suspend fun verifyPin(pin: String): PinCheckResult = adminRepo.verifyPin(pin)
 
     fun selectCurriculum(id: String) = viewModelScope.launch { adminRepo.selectCurriculum(id) }
 

@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.learntoplay.app.ui.navigation.AppNavGraph
+import com.learntoplay.app.util.ProtectionMonitor
 
 class MainActivity : ComponentActivity() {
 
@@ -33,6 +34,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Catches the Accessibility/overlay permission having been turned off since we were
+        // last in the foreground — by the child, or by Android's own unused-permission
+        // auto-reset — and tells the parent instead of silently failing open.
+        ProtectionMonitor.checkAndNotifyIfRevoked(this)
     }
 
     override fun onNewIntent(intent: Intent) {

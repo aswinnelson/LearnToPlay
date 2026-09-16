@@ -4,9 +4,13 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.repository.TimeBankRepository
@@ -14,22 +18,50 @@ import kotlinx.coroutines.*
 
 /**
  * Foreground service that ticks down the child's earned time bank once per second
- * while a gated app is in the foreground. When the bank hits zero it re-locks
- * (AppLockAccessibilityService picks this up on the next window-state event).
+ * while a gated app is in the foreground AND the screen is on. When the bank hits zero
+ * it re-locks (AppLockAccessibilityService picks this up on the next window-state event).
  *
  * Must call startForeground() promptly after being started via startForegroundService(),
  * or Android kills it before the tick loop ever runs (silently on most versions, with a
  * ForegroundServiceDidNotStartInTimeException on API 31+). That's what was leaving the
- * time-bank balance frozen — the service was never actually granted foreground status.
+ * time-bank balance frozen before — the service was never actually granted foreground status.
+ *
+ * Screen-off pause: window focus doesn't change when the screen turns off, so without this
+ * a child who locks the phone mid-session would keep burning their bank for nothing. A
+ * registered (not manifest-declared — SCREEN_ON/OFF are protected broadcasts that can only
+ * be received via a runtime-registered receiver) BroadcastReceiver flips a flag the tick
+ * loop checks each second.
  */
 class TimeBankTrackerService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var tickJob: Job? = null
 
+    @Volatile private var screenOn = true
+
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> screenOn = false
+                Intent.ACTION_SCREEN_ON -> screenOn = true
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         startForeground(NOTIFICATION_ID, buildNotification())
+
+        val powerManager = getSystemService(PowerManager::class.java)
+        screenOn = powerManager?.isInteractive ?: true
+
+        registerReceiver(
+            screenStateReceiver,
+            IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_SCREEN_ON)
+            }
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -39,6 +71,8 @@ class TimeBankTrackerService : Service() {
         tickJob = scope.launch {
             while (isActive) {
                 delay(1000)
+                if (!screenOn) continue // paused: screen is off, don't spend banked time
+
                 val remaining = repo.getBalanceSeconds()
                 if (remaining <= 0) {
                     stopSelf()
@@ -69,6 +103,7 @@ class TimeBankTrackerService : Service() {
 
     override fun onDestroy() {
         tickJob?.cancel()
+        runCatching { unregisterReceiver(screenStateReceiver) }
         super.onDestroy()
     }
 

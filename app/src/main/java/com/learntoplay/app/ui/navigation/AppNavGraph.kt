@@ -3,6 +3,7 @@ package com.learntoplay.app.ui.navigation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -37,7 +38,9 @@ fun AppNavGraph(
     openQuizOnStart: Boolean = false,
     onOpenQuizConsumed: () -> Unit = {}
 ) {
-    val adminViewModel: AdminViewModel = viewModel(factory = simpleFactory { AdminViewModel(db) })
+    val appContext = LocalContext.current.applicationContext
+    val adminViewModel: AdminViewModel =
+        viewModel(factory = simpleFactory { AdminViewModel(db, appContext) })
     val settings by db.adminSettingsDao().observe().collectAsState(initial = null)
     val minutesRemaining = ((settings?.timeBankSecondsRemaining ?: 0L) / 60L).toInt()
 

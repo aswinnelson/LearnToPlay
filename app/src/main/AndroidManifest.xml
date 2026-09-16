@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Lets us alert the parent if Accessibility/overlay protection gets turned off
+         (ProtectionMonitor). Runtime-requested on API 33+; if never granted, the alert is
+         simply skipped rather than crashing. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Scoped visibility for the Gated Apps picker (InstalledAppsProvider): only sees
          apps that declare a launcher activity, same as the home-screen app drawer. This
