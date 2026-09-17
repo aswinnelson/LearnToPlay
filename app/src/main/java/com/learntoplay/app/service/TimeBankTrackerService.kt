@@ -14,6 +14,7 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.repository.TimeBankRepository
+import com.learntoplay.app.remote.FamilySyncRepository
 import kotlinx.coroutines.*
 
 /**
@@ -31,6 +32,12 @@ import kotlinx.coroutines.*
  * registered (not manifest-declared — SCREEN_ON/OFF are protected broadcasts that can only
  * be received via a runtime-registered receiver) BroadcastReceiver flips a flag the tick
  * loop checks each second.
+ *
+ * Remote sync: pushes to Firestore every SYNC_INTERVAL_TICKS seconds (not every tick — that
+ * would be a write per second, wasteful and pointless for a parent glancing at their phone
+ * occasionally) while a gated-app session is active, so a parent checking remotely sees the
+ * time bank counting down roughly live rather than only updating on quiz completion or a
+ * manual Admin Dashboard change.
  */
 class TimeBankTrackerService : Service() {
 
@@ -66,19 +73,28 @@ class TimeBankTrackerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (tickJob?.isActive == true) return START_STICKY
-        val repo = TimeBankRepository(AppDatabase.getInstance(applicationContext))
+        val db = AppDatabase.getInstance(applicationContext)
+        val repo = TimeBankRepository(db)
 
         tickJob = scope.launch {
+            var ticksSinceSync = 0
             while (isActive) {
                 delay(1000)
                 if (!screenOn) continue // paused: screen is off, don't spend banked time
 
                 val remaining = repo.getBalanceSeconds()
                 if (remaining <= 0) {
+                    FamilySyncRepository.pushSnapshot(applicationContext, db)
                     stopSelf()
                     break
                 }
                 repo.spendSeconds(1)
+
+                ticksSinceSync++
+                if (ticksSinceSync >= SYNC_INTERVAL_TICKS) {
+                    ticksSinceSync = 0
+                    FamilySyncRepository.pushSnapshot(applicationContext, db)
+                }
             }
         }
         return START_STICKY
@@ -112,5 +128,6 @@ class TimeBankTrackerService : Service() {
     companion object {
         private const val CHANNEL_ID = "time_bank_tracker"
         private const val NOTIFICATION_ID = 1001
+        private const val SYNC_INTERVAL_TICKS = 30
     }
 }

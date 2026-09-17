@@ -10,6 +10,7 @@ import com.learntoplay.app.data.repository.AdminRepository
 import com.learntoplay.app.data.repository.PinCheckResult
 import com.learntoplay.app.data.repository.QuizRepository
 import com.learntoplay.app.data.repository.TimeBankRepository
+import com.learntoplay.app.remote.FamilySyncRepository
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -26,7 +27,8 @@ data class QuizHistoryRow(
 )
 
 class AdminViewModel(private val db: AppDatabase, context: Context) : ViewModel() {
-    private val adminRepo = AdminRepository(db, context)
+    private val appContext = context.applicationContext
+    private val adminRepo = AdminRepository(db, appContext)
     private val timeBankRepo = TimeBankRepository(db)
     private val quizRepo = QuizRepository(db)
 
@@ -73,7 +75,10 @@ class AdminViewModel(private val db: AppDatabase, context: Context) : ViewModel(
         viewModelScope.launch { adminRepo.deleteQuestion(id) }
 
     fun setAppGated(packageName: String, displayName: String, enabled: Boolean) =
-        viewModelScope.launch { adminRepo.setAppGated(packageName, displayName, enabled) }
+        viewModelScope.launch {
+            adminRepo.setAppGated(packageName, displayName, enabled)
+            syncNow()
+        }
 
     suspend fun getScoreTimeRules(): List<ScoreTimeRuleEntity> = timeBankRepo.getRules()
 
@@ -85,5 +90,14 @@ class AdminViewModel(private val db: AppDatabase, context: Context) : ViewModel(
      * next one-second tick if a gated-app session is in progress. */
     fun setTimeBankMinutes(minutes: Int) = viewModelScope.launch {
         timeBankRepo.setBalanceSeconds(minutes.coerceAtLeast(0).toLong() * 60L)
+        syncNow()
     }
+
+    /** The random pairing code a parent's separate phone types in to view this device's
+     * synced data remotely. Generated once and stable thereafter — see FamilySyncRepository. */
+    fun getFamilyCode(): String = FamilySyncRepository.getOrCreateFamilyCode(appContext)
+
+    /** Pushes the current state to Firestore right away, e.g. right after generating a pairing
+     * code for the first time, rather than waiting for the next automatic sync point. */
+    fun syncNow() = viewModelScope.launch { FamilySyncRepository.pushSnapshot(appContext, db) }
 }

@@ -1,7 +1,11 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -19,15 +23,22 @@ android {
     buildFeatures {
         compose = true
     }
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
-    }
+    // kotlinCompilerExtensionVersion is no longer set here — since Kotlin 2.0, the Compose
+    // compiler ships as part of the Kotlin toolchain itself via the
+    // org.jetbrains.kotlin.plugin.compose plugin above, which is kept in lockstep with the
+    // Kotlin version declared in the root build.gradle.kts.
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
+}
+
+// Replaces the old (now-removed) android.kotlinOptions { jvmTarget = "17" } block — the
+// Kotlin Gradle plugin moved this into its own top-level `kotlin { compilerOptions { ... } }`
+// extension as of Kotlin 2.x.
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.fromTarget("17")
     }
 }
 
@@ -51,10 +62,13 @@ dependencies {
     implementation("androidx.savedstate:savedstate-ktx:1.2.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.4")
 
-    // Room (local-first persistence — no login, no cloud account for MVP)
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    ksp("androidx.room:room-compiler:2.6.1")
+    // Room (local-first persistence — no login, no cloud account for MVP). Bumped from 2.6.1 to
+    // 2.8.5 (latest stable) because 2.6.1 predates Room's KSP2 support — it was hitting a known
+    // KSP2 bug ("unexpected jvm signature V") that only newer Room releases avoid, since Room
+    // only added real Kotlin 2.0 / KSP2 compatibility starting at 2.7.0.
+    implementation("androidx.room:room-runtime:2.8.5")
+    implementation("androidx.room:room-ktx:2.8.5")
+    ksp("androidx.room:room-compiler:2.8.5")
 
     // Security (PIN hashing)
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
@@ -70,6 +84,17 @@ dependencies {
     // that fixed path, so no network call happens at build or run time for this dependency.
     // Google's own docs note this doesn't reliably run on emulators — real-device only.
     implementation("com.google.mediapipe:tasks-genai:0.10.27")
+
+    // Remote parent monitoring: syncs a narrow read-only snapshot (time bank, gated apps, quiz
+    // history — never the PIN or question content) to Firestore so a parent's own separate
+    // phone can check on it. The one deliberate exception to this app's local-first design,
+    // and opt-in in effect (nothing syncs until a parent generates a pairing code).
+    implementation(platform("com.google.firebase:firebase-bom:34.19.0"))
+    implementation("com.google.firebase:firebase-firestore")
+    implementation("com.google.firebase:firebase-auth")
+    // Provides the `.await()` suspend extension used to bridge Firebase's Task API into
+    // coroutines (kept intentionally separate from Firebase's own artifacts).
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

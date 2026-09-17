@@ -16,6 +16,7 @@ import com.learntoplay.app.ui.admin.*
 import com.learntoplay.app.ui.child.ChildHomeScreen
 import com.learntoplay.app.ui.child.QuizScreen
 import com.learntoplay.app.ui.child.QuizViewModel
+import com.learntoplay.app.ui.remote.RemoteMonitorScreen
 
 private object Routes {
     const val CHILD_HOME = "child_home"
@@ -27,6 +28,7 @@ private object Routes {
     const val ADMIN_GATED_APPS = "admin_gated_apps"
     const val ADMIN_HISTORY = "admin_history"
     const val ADMIN_MANAGE_QUESTIONS = "admin_manage_questions"
+    const val REMOTE_MONITOR = "remote_monitor"
 }
 
 /**
@@ -67,12 +69,17 @@ fun AppNavGraph(
             )
         }
         composable(Routes.QUIZ) {
-            val quizViewModel: QuizViewModel = viewModel(factory = simpleFactory { QuizViewModel(db) })
+            val quizViewModel: QuizViewModel =
+                viewModel(factory = simpleFactory { QuizViewModel(db, appContext) })
             androidx.compose.runtime.LaunchedEffect(Unit) { quizViewModel.start() }
             QuizScreen(quizViewModel) { navController.popBackStack() }
         }
         composable(Routes.ADMIN_PIN) {
-            AdminPinScreen(adminViewModel) { navController.navigate(Routes.ADMIN_DASHBOARD) }
+            AdminPinScreen(
+                adminViewModel,
+                onUnlocked = { navController.navigate(Routes.ADMIN_DASHBOARD) },
+                onViewRemoteDevice = { navController.navigate(Routes.REMOTE_MONITOR) }
+            )
         }
         composable(Routes.ADMIN_DASHBOARD) {
             AdminDashboardScreen(
@@ -110,6 +117,9 @@ fun AppNavGraph(
         }
         composable(Routes.ADMIN_HISTORY) {
             QuizHistoryScreen(adminViewModel) { navController.popBackStack() }
+        }
+        composable(Routes.REMOTE_MONITOR) {
+            RemoteMonitorScreen(onBack = { navController.popBackStack() })
         }
     }
 }

@@ -1,11 +1,13 @@
 package com.learntoplay.app.ui.child
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.db.entities.GatedAppEntity
 import com.learntoplay.app.data.db.entities.QuestionEntity
 import com.learntoplay.app.data.repository.QuizRepository
+import com.learntoplay.app.remote.FamilySyncRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -31,7 +33,8 @@ data class QuizUiState(
     val noCurriculumSelected: Boolean = false
 )
 
-class QuizViewModel(private val db: AppDatabase) : ViewModel() {
+class QuizViewModel(private val db: AppDatabase, context: Context) : ViewModel() {
+    private val appContext = context.applicationContext
     private val quizRepo = QuizRepository(db)
 
     private val _state = MutableStateFlow(QuizUiState())
@@ -84,6 +87,10 @@ class QuizViewModel(private val db: AppDatabase) : ViewModel() {
                     totalMinutesRemaining = totalMinutes,
                     unlockedApps = unlockedApps
                 )
+                // So a parent checking remotely sees a just-finished quiz without waiting for
+                // the periodic sync from TimeBankTrackerService (which only runs while a
+                // gated app is open). Best-effort/silent — see FamilySyncRepository.
+                FamilySyncRepository.pushSnapshot(appContext, db)
             }
         }
     }
