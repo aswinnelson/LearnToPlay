@@ -2,6 +2,7 @@ package com.learntoplay.app.remote
 
 import android.content.Context
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.crashlytics.FirebaseCrashlytics
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.learntoplay.app.data.db.AppDatabase
@@ -65,14 +66,21 @@ object FamilySyncRepository {
             auth.signInAnonymously().await()
             true
         } catch (e: Exception) {
+            // Recorded as non-fatal rather than swallowed outright — a run of failed sign-ins
+            // (e.g. anonymous auth quietly disabled in the Firebase console, or a persistent
+            // network issue) should be visible in Crashlytics even though it never crashes the
+            // app. Still best-effort: see pushSnapshot doc comment below.
+            FirebaseCrashlytics.getInstance().recordException(e)
             false
         }
     }
 
-    /** Pushes this child device's current state to Firestore. Best-effort and silent on
-     * failure (no crash, no user-facing error) — remote monitoring is a convenience layered on
-     * top of the app, never something the child's core experience should depend on or break
-     * for (e.g. no internet connection right now). */
+    /** Pushes this child device's current state to Firestore. Best-effort and silent to the
+     * *user* on failure (no crash, no user-facing error) — remote monitoring is a convenience
+     * layered on top of the app, never something the child's core experience should depend on
+     * or break for (e.g. no internet connection right now). Failures are still recorded to
+     * Crashlytics as non-fatals, so a *pattern* of sync failures is visible to us even though
+     * no single failure is worth interrupting the child over. */
     suspend fun pushSnapshot(context: Context, db: AppDatabase) {
         if (!ensureSignedIn()) return
         val code = getOrCreateFamilyCode(context)
@@ -102,7 +110,7 @@ object FamilySyncRepository {
         try {
             FirebaseFirestore.getInstance().collection(COLLECTION).document(code).set(data).await()
         } catch (e: Exception) {
-            // Best-effort — see class doc comment.
+            FirebaseCrashlytics.getInstance().recordException(e)
         }
     }
 
@@ -116,6 +124,7 @@ object FamilySyncRepository {
         return FirebaseFirestore.getInstance().collection(COLLECTION).document(familyCode)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
+                    FirebaseCrashlytics.getInstance().recordException(error)
                     onError("Couldn't reach the synced data (${error.message ?: "unknown error"}).")
                     return@addSnapshotListener
                 }

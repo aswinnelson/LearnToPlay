@@ -6,6 +6,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
     id("com.google.gms.google-services")
+    id("com.google.firebase.crashlytics")
 }
 
 android {
@@ -22,6 +23,9 @@ android {
 
     buildFeatures {
         compose = true
+        // AGP 8.0+ stopped generating BuildConfig by default — needed explicitly here since
+        // AdminDashboardScreen checks BuildConfig.DEBUG to show the debug-only test-crash card.
+        buildConfig = true
     }
     // kotlinCompilerExtensionVersion is no longer set here — since Kotlin 2.0, the Compose
     // compiler ships as part of the Kotlin toolchain itself via the
@@ -92,6 +96,12 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:34.19.0"))
     implementation("com.google.firebase:firebase-firestore")
     implementation("com.google.firebase:firebase-auth")
+    // Crash reporting — see the crashlytics plugin in the root build.gradle.kts. Analytics is
+    // included because Crashlytics relies on it under the hood for breadcrumbs (the trail of
+    // recent app activity attached to a crash report), not because this app otherwise wants
+    // usage analytics.
+    implementation("com.google.firebase:firebase-crashlytics")
+    implementation("com.google.firebase:firebase-analytics")
     // Provides the `.await()` suspend extension used to bridge Firebase's Task API into
     // coroutines (kept intentionally separate from Firebase's own artifacts).
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")

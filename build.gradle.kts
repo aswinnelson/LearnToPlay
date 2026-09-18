@@ -4,4 +4,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose") version "2.4.20" apply false
     id("com.google.devtools.ksp") version "2.3.10" apply false
     id("com.google.gms.google-services") version "4.4.2" apply false
+    // Crash reporting — reports uncaught exceptions (and anything we explicitly record via
+    // FirebaseCrashlytics.recordException) to the Firebase console, so real runtime issues on
+    // a child's or parent's device surface automatically instead of relying on them describing
+    // what went wrong.
+    id("com.google.firebase.crashlytics") version "3.0.8" apply false
 }

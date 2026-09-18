@@ -8,20 +8,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import com.learntoplay.app.admin.TamperGuard
 import com.learntoplay.app.util.OverlayPermissions
 
-/** Landing screen for Admin Mode — links to the parent-configurable "privilege" screens,
- * plus an inline Time Bank override, a Tamper Protection card for Device Owner lockdown, and
- * a Remote Access card with the pairing code for a parent's separate phone. */
+/** Landing screen for Admin Mode — kept deliberately short (Finish Setup + Time Bank + the
+ * four content-management buttons) so it fits on a phone screen with little to no scrolling.
+ * Tamper Protection, Remote Access, and debug tools live one tap away on
+ * [DeviceSettingsScreen] instead, since those are check-once-in-a-while settings, not
+ * something a parent opens every time. */
 @Composable
 fun AdminDashboardScreen(
     adminViewModel: AdminViewModel,
@@ -29,34 +25,12 @@ fun AdminDashboardScreen(
     onManageScoreTimeRules: () -> Unit,
     onManageGatedApps: () -> Unit,
     onViewHistory: () -> Unit,
+    onOpenDeviceSettings: () -> Unit,
     onExitAdmin: () -> Unit
 ) {
     val context = LocalContext.current
-    val clipboardManager = LocalClipboardManager.current
     var hasOverlayPermission by remember { mutableStateOf(OverlayPermissions.hasOverlayPermission(context)) }
     var hasAccessibilityPermission by remember { mutableStateOf(OverlayPermissions.isAccessibilityServiceEnabled(context)) }
-    var isDeviceOwner by remember { mutableStateOf(TamperGuard.isDeviceOwner(context)) }
-    var tamperMessage by remember { mutableStateOf<String?>(null) }
-    var familyCode by remember { mutableStateOf<String?>(null) }
-    var justCopied by remember { mutableStateOf(false) }
-    // Cheap and local (SharedPreferences only, no network) — safe to fetch/create right away
-    // rather than making the parent tap a button just to see a code that already exists.
-    LaunchedEffect(Unit) { familyCode = adminViewModel.getFamilyCode() }
-
-    // All of these are granted/changed outside this screen (Settings, or a one-time adb
-    // command for Device Owner), so re-check whenever the parent comes back here.
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                hasOverlayPermission = OverlayPermissions.hasOverlayPermission(context)
-                hasAccessibilityPermission = OverlayPermissions.isAccessibilityServiceEnabled(context)
-                isDeviceOwner = TamperGuard.isDeviceOwner(context)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
 
     val minutesRemaining by adminViewModel.timeBankMinutesRemaining.collectAsState(initial = 0)
     // Deliberately NOT reset every time minutesRemaining ticks (which happens once a second
@@ -66,10 +40,16 @@ fun AdminDashboardScreen(
     var timeBankInput by remember { mutableStateOf("") }
     var justUpdated by remember { mutableStateOf(false) }
 
-    // Scrollable: this screen now stacks five cards (setup, time bank, tamper protection,
-    // remote access) plus four nav buttons, which overflows a typical phone screen. Without
-    // this, anything past "Quiz History" (including the whole Remote Access card) was simply
-    // clipped off-screen with no way to reach it.
+    // Re-check permissions every time this screen is shown (returning from Settings after
+    // granting one, for instance). Simpler than the lifecycle-observer version this screen
+    // used to have, now that there's much less on it.
+    LaunchedEffect(Unit) {
+        hasOverlayPermission = OverlayPermissions.hasOverlayPermission(context)
+        hasAccessibilityPermission = OverlayPermissions.isAccessibilityServiceEnabled(context)
+    }
+
+    // Still scrollable as a safety net for smaller phones or larger system font sizes, but
+    // this screen is now short enough that scrolling shouldn't normally be needed.
     Column(
         Modifier
             .fillMaxSize()
@@ -83,11 +63,7 @@ fun AdminDashboardScreen(
             Card {
                 Column(Modifier.padding(16.dp)) {
                     Text("Finish setup", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "The app needs two permissions to actually lock gated apps behind the quiz.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(8.dp))
                     if (!hasOverlayPermission) {
                         PermissionRow(
                             label = "Display over other apps",
@@ -109,8 +85,7 @@ fun AdminDashboardScreen(
             Column(Modifier.padding(16.dp)) {
                 Text("Time Bank", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Currently $minutesRemaining minute${if (minutesRemaining == 1) "" else "s"} remaining. " +
-                        "Changing this applies immediately, even mid-session.",
+                    "$minutesRemaining minute${if (minutesRemaining == 1) "" else "s"} remaining",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(8.dp))
@@ -137,7 +112,6 @@ fun AdminDashboardScreen(
                     }) { Text("Update") }
                 }
                 if (justUpdated) {
-                    Spacer(Modifier.height(4.dp))
                     Text(
                         "Updated.",
                         style = MaterialTheme.typography.bodySmall,
@@ -147,85 +121,6 @@ fun AdminDashboardScreen(
             }
         }
 
-        Spacer(Modifier.height(16.dp))
-        Card {
-            Column(Modifier.padding(16.dp)) {
-                Text("Tamper Protection", style = MaterialTheme.typography.titleMedium)
-                if (isDeviceOwner) {
-                    Text(
-                        "Device Owner is active on this phone. Apply protections to block " +
-                            "uninstalling this app, booting into Safe Mode, and factory reset " +
-                            "from Settings — the three most common ways around a parental " +
-                            "control app.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row {
-                        Button(onClick = {
-                            tamperMessage = when (val result = TamperGuard.applyProtections(context)) {
-                                TamperGuard.ApplyResult.Applied -> "Protections applied."
-                                is TamperGuard.ApplyResult.Failed -> result.reason
-                            }
-                        }) { Text("Apply Protections") }
-                        Spacer(Modifier.width(8.dp))
-                        OutlinedButton(onClick = {
-                            tamperMessage = when (val result = TamperGuard.removeProtections(context)) {
-                                TamperGuard.ApplyResult.Applied -> "Protections removed."
-                                is TamperGuard.ApplyResult.Failed -> result.reason
-                            }
-                        }) { Text("Remove") }
-                    }
-                } else {
-                    Text(
-                        "Not set up yet. This is a one-time step done outside the app: factory " +
-                            "reset the phone, skip adding any account, then run the adb setup " +
-                            "command while it's connected to a computer (see setup notes). Come " +
-                            "back to this screen afterward — it'll update automatically.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-                tamperMessage?.let { message ->
-                    Spacer(Modifier.height(4.dp))
-                    Text(message, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
-        Card {
-            Column(Modifier.padding(16.dp)) {
-                Text("Remote Access", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Share this code once with a parent's own separate phone (Parent PIN " +
-                        "screen → \"View a paired child device\") to check the time bank, " +
-                        "gated apps, and quiz history remotely. Anyone with this code can " +
-                        "view that data, so treat it like a shared password.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Spacer(Modifier.height(8.dp))
-                val code = familyCode
-                if (code == null) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(code, style = MaterialTheme.typography.headlineSmall)
-                        Spacer(Modifier.width(12.dp))
-                        TextButton(onClick = {
-                            clipboardManager.setText(AnnotatedString(code))
-                            justCopied = true
-                        }) { Text(if (justCopied) "Copied" else "Copy") }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    TextButton(onClick = { adminViewModel.syncNow() }) { Text("Sync Now") }
-                }
-            }
-        }
-
-        // Was Spacer(Modifier.weight(1f)) to pin "Back to Child Mode" to the bottom — that
-        // only works in a non-scrolling Column with bounded height. Combining weight() with
-        // verticalScroll() in the same Column throws at runtime (scrolling content needs
-        // unbounded height, weight needs bounded height), so this is now a fixed gap instead;
-        // the button just sits right after the nav buttons rather than pinned to the bottom.
         Spacer(Modifier.height(24.dp))
         Button(onClick = onManageCurriculum, modifier = Modifier.fillMaxWidth()) {
             Text("Select Curriculum")
@@ -241,6 +136,10 @@ fun AdminDashboardScreen(
         Spacer(Modifier.height(8.dp))
         Button(onClick = onViewHistory, modifier = Modifier.fillMaxWidth()) {
             Text("Quiz History")
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = onOpenDeviceSettings, modifier = Modifier.fillMaxWidth()) {
+            Text("Device & Remote Settings")
         }
         Spacer(Modifier.height(24.dp))
         OutlinedButton(onClick = onExitAdmin, modifier = Modifier.fillMaxWidth()) {

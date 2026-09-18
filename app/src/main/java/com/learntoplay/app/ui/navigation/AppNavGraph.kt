@@ -28,6 +28,7 @@ private object Routes {
     const val ADMIN_GATED_APPS = "admin_gated_apps"
     const val ADMIN_HISTORY = "admin_history"
     const val ADMIN_MANAGE_QUESTIONS = "admin_manage_questions"
+    const val ADMIN_DEVICE_SETTINGS = "admin_device_settings"
     const val REMOTE_MONITOR = "remote_monitor"
 }
 
@@ -88,6 +89,7 @@ fun AppNavGraph(
                 onManageScoreTimeRules = { navController.navigate(Routes.ADMIN_SCORE_TIME) },
                 onManageGatedApps = { navController.navigate(Routes.ADMIN_GATED_APPS) },
                 onViewHistory = { navController.navigate(Routes.ADMIN_HISTORY) },
+                onOpenDeviceSettings = { navController.navigate(Routes.ADMIN_DEVICE_SETTINGS) },
                 onExitAdmin = { navController.popBackStack(Routes.CHILD_HOME, inclusive = false) }
             )
         }
@@ -117,6 +119,9 @@ fun AppNavGraph(
         }
         composable(Routes.ADMIN_HISTORY) {
             QuizHistoryScreen(adminViewModel) { navController.popBackStack() }
+        }
+        composable(Routes.ADMIN_DEVICE_SETTINGS) {
+            DeviceSettingsScreen(adminViewModel, onBack = { navController.popBackStack() })
         }
         composable(Routes.REMOTE_MONITOR) {
             RemoteMonitorScreen(onBack = { navController.popBackStack() })
