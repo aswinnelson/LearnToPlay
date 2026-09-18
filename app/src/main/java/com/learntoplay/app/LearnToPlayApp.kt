@@ -2,6 +2,7 @@ package com.learntoplay.app
 
 import android.app.Application
 import com.google.firebase.crashlytics.FirebaseCrashlytics
+import com.google.firebase.firestore.ListenerRegistration
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.seed.PresetCurriculumSeed
 import com.learntoplay.app.remote.FamilySyncRepository
@@ -14,11 +15,18 @@ class LearnToPlayApp : Application() {
     lateinit var database: AppDatabase
         private set
 
+    private var commandsListener: ListenerRegistration? = null
+
     override fun onCreate() {
         super.onCreate()
         database = AppDatabase.getInstance(this)
         seedIfEmpty()
         tagCrashesWithFamilyCode()
+        // Starts listening for the whole app process's lifetime, not tied to any one screen —
+        // a parent's "add time"/"lock now" command should land whether the child currently has
+        // the Admin screens open or not. See FamilySyncRepository.listenForCommands for the
+        // one-shot-queue semantics and offline-delivery caveat.
+        commandsListener = FamilySyncRepository.listenForCommands(this, database)
     }
 
     // Tags every crash report from this device with its family code (a cheap local

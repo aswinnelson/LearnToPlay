@@ -3,10 +3,15 @@ package com.learntoplay.app.remote
 import android.content.Context
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.crashlytics.FirebaseCrashlytics
+import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.learntoplay.app.data.db.AppDatabase
+import com.learntoplay.app.data.repository.TimeBankRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlin.random.Random
 
@@ -29,19 +34,32 @@ data class RemoteFamilySnapshot(
     val lastSyncedAtEpochMillis: Long
 )
 
+/** Command type strings understood by [FamilySyncRepository.applyCommand]. Plain strings
+ * rather than an enum since they cross the Firestore boundary as-is. */
+object RemoteCommandType {
+    const val ADD_TIME = "add_time"
+    const val LOCK_NOW = "lock_now"
+}
+
 /**
- * Syncs a narrow, read-only snapshot of this child device's state (time bank, gated apps,
- * quiz history) to Firestore, so a parent's own separate phone can check on it. This is the
- * one place in the app that sends anything off-device — deliberately limited: no PIN, no
- * question-bank content, nothing from the camera/OCR flow.
+ * Syncs a narrow snapshot of this child device's state (time bank, gated apps, quiz history)
+ * to Firestore, so a parent's own separate phone can check on it — and, going the other way,
+ * lets that same parent phone send a small set of remote commands (add time, lock now) back
+ * to the child device. This is the one place in the app that sends or receives anything
+ * off-device — deliberately narrow: no PIN, no question-bank content, nothing from the
+ * camera/OCR flow, and only two command types.
  *
  * Pairing works via a random "family code" generated once on the child's phone and typed once
  * into the parent's phone (see RemoteMonitorScreen). There's no login/account system anywhere
  * else in this app, so this code IS the access control — long enough to not be practically
- * guessable, but this is "whoever has the code can read it," not enterprise-grade security.
- * Appropriate for sharing between your own two phones, not a public product. The paired
- * Firestore security rules (see project notes) additionally require the reader to at least be
- * signed in (anonymously), so a completely unauthenticated script can't read anything either.
+ * guessable, but this is "whoever has the code can read and control it," not enterprise-grade
+ * security. Appropriate for sharing between your own two phones, not a public product. The
+ * paired Firestore security rules (see project notes) additionally require the reader/writer
+ * to at least be signed in (anonymously), so a completely unauthenticated script can't touch
+ * anything either.
+ *
+ * Commands are a one-shot queue, not a log: the child device deletes each command doc right
+ * after applying it, under `families/{familyCode}/commands/{commandId}`.
  */
 object FamilySyncRepository {
     private const val PREFS_NAME = "family_sync"
@@ -50,6 +68,7 @@ object FamilySyncRepository {
     private const val CODE_LENGTH = 10
     private const val MAX_HISTORY_ENTRIES = 20
     private const val COLLECTION = "families"
+    private const val COMMANDS_SUBCOLLECTION = "commands"
 
     fun getOrCreateFamilyCode(context: Context): String {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -158,5 +177,78 @@ object FamilySyncRepository {
                     )
                 )
             }
+    }
+
+    /** Sends a remote command from the parent's phone to [familyCode]'s child device — see
+     * [RemoteCommandType] for the small set of supported actions. The child device (listening
+     * via [listenForCommands]) applies it and deletes the doc; this call just enqueues it, so
+     * a `true` return means "delivered to Firestore," not "the child device has acted on it
+     * yet" (that device might be offline right now). */
+    suspend fun sendCommand(familyCode: String, type: String, minutes: Int? = null): Boolean {
+        if (!ensureSignedIn()) return false
+        val data = hashMapOf<String, Any>(
+            "type" to type,
+            "createdAtEpochMillis" to System.currentTimeMillis()
+        )
+        if (minutes != null) data["minutes"] = minutes
+        return try {
+            FirebaseFirestore.getInstance()
+                .collection(COLLECTION).document(familyCode)
+                .collection(COMMANDS_SUBCOLLECTION)
+                .add(data)
+                .await()
+            true
+        } catch (e: Exception) {
+            FirebaseCrashlytics.getInstance().recordException(e)
+            false
+        }
+    }
+
+    /** Starts listening for remote commands addressed to this device's own family code, for
+     * the life of the app process (started once, from [com.learntoplay.app.LearnToPlayApp]).
+     * Each newly-added command doc is applied via [applyCommand] and then deleted — a one-shot
+     * queue, not a running log. A command that arrives while this device is completely offline
+     * is simply picked up (and, if still un-deleted, re-applied) the next time the app is
+     * running and reconnects; for `add_time`/`lock_now` that's an acceptable MVP tradeoff, not
+     * something worth a full ack/ID-dedup protocol for. */
+    fun listenForCommands(context: Context, db: AppDatabase): ListenerRegistration {
+        val code = getOrCreateFamilyCode(context)
+        val commandsRef = FirebaseFirestore.getInstance()
+            .collection(COLLECTION).document(code).collection(COMMANDS_SUBCOLLECTION)
+        return commandsRef.addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                FirebaseCrashlytics.getInstance().recordException(error)
+                return@addSnapshotListener
+            }
+            val changes = snapshot?.documentChanges ?: return@addSnapshotListener
+            for (change in changes) {
+                if (change.type != DocumentChange.Type.ADDED) continue
+                val doc = change.document
+                val type = doc.getString("type") ?: continue
+                val minutes = doc.getLong("minutes")?.toInt()
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        applyCommand(db, type, minutes)
+                    } catch (e: Exception) {
+                        FirebaseCrashlytics.getInstance().recordException(e)
+                    } finally {
+                        doc.reference.delete()
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun applyCommand(db: AppDatabase, type: String, minutes: Int?) {
+        val timeBankRepo = TimeBankRepository(db)
+        when (type) {
+            RemoteCommandType.ADD_TIME -> {
+                val addSeconds = (minutes ?: 0).coerceAtLeast(0).toLong() * 60L
+                if (addSeconds <= 0L) return
+                val current = timeBankRepo.getBalanceSeconds()
+                timeBankRepo.setBalanceSeconds(current + addSeconds)
+            }
+            RemoteCommandType.LOCK_NOW -> timeBankRepo.setBalanceSeconds(0L)
+        }
     }
 }

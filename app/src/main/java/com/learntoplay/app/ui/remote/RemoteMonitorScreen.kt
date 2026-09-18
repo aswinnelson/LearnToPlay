@@ -9,15 +9,18 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.learntoplay.app.remote.FamilySyncRepository
+import com.learntoplay.app.remote.RemoteCommandType
 import com.learntoplay.app.remote.RemoteFamilySnapshot
 import kotlinx.coroutines.launch
 
-/** Lets a parent's own separate phone check on a paired child device: time bank remaining,
- * gated apps, and recent quiz history, read live from Firestore. This screen never needs the
- * local Parent PIN — it's reached straight from the PIN screen precisely because this phone
- * usually isn't the one being administered. */
+/** Lets a parent's own separate phone check on a paired child device — time bank remaining,
+ * gated apps, and recent quiz history, read live from Firestore — and now also send a couple
+ * of remote commands back (add time, lock the device now). This screen never needs the local
+ * Parent PIN — it's reached straight from the PIN screen precisely because this phone usually
+ * isn't the one being administered. */
 @Composable
 fun RemoteMonitorScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -27,6 +30,13 @@ fun RemoteMonitorScreen(onBack: () -> Unit) {
     var connectError by remember { mutableStateOf<String?>(null) }
     var snapshot by remember { mutableStateOf<RemoteFamilySnapshot?>(null) }
     var liveError by remember { mutableStateOf<String?>(null) }
+
+    // Remote Actions state — separate from the read-only snapshot above since sending a
+    // command doesn't wait for or depend on the live listener.
+    var addMinutesInput by remember { mutableStateOf("") }
+    var sendingCommand by remember { mutableStateOf(false) }
+    var confirmLock by remember { mutableStateOf(false) }
+    var commandFeedback by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(connectedCode) {
         val code = connectedCode
@@ -104,6 +114,84 @@ fun RemoteMonitorScreen(onBack: () -> Unit) {
                                 "${if (current.timeBankMinutesRemaining == 1) "" else "s"} remaining",
                             style = MaterialTheme.typography.bodyMedium
                         )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Card {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("Remote Actions", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Sent over the same connection as the status above — the child's " +
+                                "phone applies it next time it's online.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = addMinutesInput,
+                                onValueChange = {
+                                    addMinutesInput = it.filter(Char::isDigit).take(3)
+                                    commandFeedback = null
+                                },
+                                label = { Text("Minutes") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Button(
+                                enabled = !sendingCommand && (addMinutesInput.toIntOrNull() ?: 0) > 0,
+                                onClick = {
+                                    val minutes = addMinutesInput.toIntOrNull() ?: return@Button
+                                    val code = connectedCode ?: return@Button
+                                    sendingCommand = true
+                                    scope.launch {
+                                        val ok = FamilySyncRepository.sendCommand(
+                                            code, RemoteCommandType.ADD_TIME, minutes
+                                        )
+                                        commandFeedback = if (ok) "Sent: +$minutes min"
+                                            else "Couldn't send — check your connection."
+                                        if (ok) addMinutesInput = ""
+                                        sendingCommand = false
+                                    }
+                                }
+                            ) { Text("Add Time") }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        if (confirmLock) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Button(
+                                    enabled = !sendingCommand,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.error
+                                    ),
+                                    onClick = {
+                                        val code = connectedCode ?: return@Button
+                                        sendingCommand = true
+                                        scope.launch {
+                                            val ok = FamilySyncRepository.sendCommand(
+                                                code, RemoteCommandType.LOCK_NOW
+                                            )
+                                            commandFeedback = if (ok) "Sent: lock now"
+                                                else "Couldn't send — check your connection."
+                                            confirmLock = false
+                                            sendingCommand = false
+                                        }
+                                    }
+                                ) { Text("Confirm Lock Now") }
+                                Spacer(Modifier.width(8.dp))
+                                TextButton(onClick = { confirmLock = false }) { Text("Cancel") }
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { confirmLock = true; commandFeedback = null },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Lock Device Now") }
+                        }
+                        commandFeedback?.let {
+                            Spacer(Modifier.height(8.dp))
+                            Text(it, style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
                 Spacer(Modifier.height(12.dp))
