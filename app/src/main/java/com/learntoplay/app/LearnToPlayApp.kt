@@ -24,9 +24,12 @@ class LearnToPlayApp : Application() {
         tagCrashesWithFamilyCode()
         // Starts listening for the whole app process's lifetime, not tied to any one screen —
         // a parent's "add time"/"lock now" command should land whether the child currently has
-        // the Admin screens open or not. See FamilySyncRepository.listenForCommands for the
-        // one-shot-queue semantics and offline-delivery caveat.
-        commandsListener = FamilySyncRepository.listenForCommands(this, database)
+        // the Admin screens open or not. listenForCommands is suspend (it signs in before
+        // attaching the listener — see its doc comment for why that order matters), so this
+        // runs on a background coroutine rather than blocking onCreate.
+        CoroutineScope(Dispatchers.IO).launch {
+            commandsListener = FamilySyncRepository.listenForCommands(this@LearnToPlayApp, database)
+        }
     }
 
     // Tags every crash report from this device with its family code (a cheap local

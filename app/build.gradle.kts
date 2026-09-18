@@ -17,8 +17,11 @@ android {
         applicationId = "com.learntoplay.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0-mvp"
+        // Bumped from 1 / "0.1.0-mvp" — this build adds Crashlytics, the Admin Dashboard /
+        // Device Settings split, two-way remote control (add time / lock now), and batch AI
+        // question generation on top of the original MVP feature set.
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     buildFeatures {

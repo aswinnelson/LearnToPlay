@@ -210,8 +210,15 @@ object FamilySyncRepository {
      * queue, not a running log. A command that arrives while this device is completely offline
      * is simply picked up (and, if still un-deleted, re-applied) the next time the app is
      * running and reconnects; for `add_time`/`lock_now` that's an acceptable MVP tradeoff, not
-     * something worth a full ack/ID-dedup protocol for. */
-    fun listenForCommands(context: Context, db: AppDatabase): ListenerRegistration {
+     * something worth a full ack/ID-dedup protocol for.
+     *
+     * Returns `null` (and attaches nothing) if sign-in fails — e.g. no network yet at cold
+     * start on a device with no prior anonymous session persisted. Must sign in *before*
+     * attaching the listener, not after: the Firestore rules require request.auth != null, and
+     * an unauthenticated listener would just fail immediately with PERMISSION_DENIED instead
+     * of quietly waiting. */
+    suspend fun listenForCommands(context: Context, db: AppDatabase): ListenerRegistration? {
+        if (!ensureSignedIn()) return null
         val code = getOrCreateFamilyCode(context)
         val commandsRef = FirebaseFirestore.getInstance()
             .collection(COLLECTION).document(code).collection(COMMANDS_SUBCOLLECTION)
