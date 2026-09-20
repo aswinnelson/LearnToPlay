@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Minimal policy set for AppDeviceAdminReceiver. Device Owner status (set once via
+     `adb shell dpm set-device-owner`) is what actually grants the broader DevicePolicyManager
+     access TamperGuard uses (setUninstallBlocked, addUserRestriction) — these two entries just
+     cover the classic Device Admin policies the app touches indirectly (force-lock is implied
+     by Device Owner's lock-management access; wipe-data is declared for completeness in case a
+     future "erase and return to factory" parent action is added). -->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies>
+        <force-lock />
+        <wipe-data />
+    </uses-policies>
+</device-admin>

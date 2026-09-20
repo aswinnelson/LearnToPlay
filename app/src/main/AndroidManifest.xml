@@ -86,5 +86,19 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- Device Owner hook (Tier 3 tamper-resistance). Only takes effect once set as
+             Device Owner outside the app via adb — see AppDeviceAdminReceiver / TamperGuard. -->
+        <receiver
+            android:name=".admin.AppDeviceAdminReceiver"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin_policies" />
+        </receiver>
+
     </application>
 </manifest>
