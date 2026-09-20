@@ -21,10 +21,11 @@ import com.learntoplay.app.util.rememberPhotoScanLauncher
 import kotlinx.coroutines.launch
 
 /** Parent-facing question bank for one curriculum: add, edit, or remove multiple-choice
- * questions — typed by hand, started from a photo of a textbook/worksheet page (Stage C OCR),
- * and/or drafted with on-device AI, either one question at a time or as a whole batch (from a
- * topic, or split out of a multi-question scan). Every path lands in a review step; nothing is
- * saved to the question bank without the parent explicitly saving it. */
+ * questions — typed by hand, started from a photo of whatever the child is studying (Stage C
+ * OCR, now paired with on-device AI that writes fresh comprehension-check questions about that
+ * page rather than just copying whatever's printed on it), and/or drafted from just a topic
+ * name. Every AI path lands in a review step; nothing is saved to the question bank without the
+ * parent explicitly saving it. */
 @Composable
 fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBack: () -> Unit) {
     val questions by viewModel.observeQuestionsForCurriculum(curriculumId).collectAsState(initial = emptyList())
@@ -35,6 +36,14 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
     var scanBusy by remember { mutableStateOf(false) }
 
     var showTopicDialog by remember { mutableStateOf(false) }
+    // True for the whole "From Topic" AI call, not just while the dialog is open — the dialog
+    // itself closes right away, so this is what tells the parent something is still happening.
+    // On-device generation on a real phone (no cloud call) can take anywhere from ~10 seconds to
+    // a couple of minutes depending on the phone and how many questions were asked for, and with
+    // no visible feedback this previously looked identical to "did nothing" — see the status
+    // banner below.
+    var topicBusy by remember { mutableStateOf(false) }
+    var topicBusyLabel by remember { mutableStateOf("") }
 
     val draftReview = remember { mutableStateListOf<DraftQuestionState>() }
     var showBatchReview by remember { mutableStateOf(false) }
@@ -48,16 +57,20 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
         showBatchReview = true
     }
 
+    // Taking a photo now always tries to go straight from picture to a ready-to-review batch of
+    // NEW comprehension questions about that page's content — not the same questions repeated,
+    // so a quiz built from it actually checks whether the child understood the material (see
+    // QuestionAiGenerator.generateComprehensionQuestionsFromScan). Only falls back to the old
+    // manual single-question dialog with raw OCR text when there's no AI model on this device at
+    // all (e.g. the emulator) or the model couldn't produce a readable result.
     val launchScan = rememberPhotoScanLauncher(
         onTextRecognized = { text ->
             scanBusy = true
             coroutineScope.launch {
-                when (val result = QuestionAiGenerator.splitScannedTextIntoQuestions(context, text)) {
+                when (val result = QuestionAiGenerator.generateComprehensionQuestionsFromScan(context, text)) {
                     is QuestionAiGenerator.BatchResult.Success -> openBatchReview(result.questions)
                     is QuestionAiGenerator.BatchResult.Unavailable -> {
-                        // No AI model on this device (e.g. the emulator) — fall back to the
-                        // original flow so scanning still works: one question, raw OCR text,
-                        // the parent trims it down by hand in the existing edit dialog.
+                        errorMessage = result.reason
                         scannedText = text
                         showAddDialog = true
                     }
@@ -110,14 +123,43 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
         ) {
             Text("Questions", style = MaterialTheme.typography.headlineSmall)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (scanBusy) {
+                if (scanBusy || topicBusy) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
                 }
-                TextButton(onClick = { launchScan() }, enabled = !scanBusy) { Text("Scan Photo") }
-                TextButton(onClick = { showTopicDialog = true }) { Text("From Topic") }
+                TextButton(onClick = { launchScan() }, enabled = !scanBusy && !topicBusy) { Text("Scan Photo") }
+                TextButton(onClick = { showTopicDialog = true }, enabled = !scanBusy && !topicBusy) { Text("From Topic") }
                 IconButton(onClick = { scannedText = null; showAddDialog = true }) {
                     Icon(Icons.Default.Add, contentDescription = "Add question")
+                }
+            }
+        }
+
+        // Prominent status banner while an AI call is in flight — the small spinner above is
+        // easy to miss, and on a real phone this can run for a while (CPU-only inference, no
+        // cloud call). Without this, the previous behavior was: dialog closes, nothing visibly
+        // happens for up to a couple of minutes, and it looks exactly like a silent failure —
+        // that's what "not working, questions not generating" turned out to be.
+        if (topicBusy || scanBusy) {
+            Spacer(Modifier.height(8.dp))
+            Card {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        if (topicBusy) {
+                            "Drafting $topicBusyLabel… this can take a minute or two on this " +
+                                "phone. Keep the app open and on screen until it finishes."
+                        } else {
+                            "Reading your photo and writing new comprehension questions about " +
+                                "it… this can take a minute or two on this phone. Keep the app " +
+                                "open until it finishes."
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
         }
@@ -140,9 +182,10 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
 
         if (questions.isEmpty()) {
             Text(
-                "No questions yet. Tap + to type one, Scan Photo to start from a picture of a " +
-                    "textbook page, or From Topic to have the AI draft a whole batch — a " +
-                    "handful is enough for a quiz to run.",
+                "No questions yet. Tap + to type one, Scan Photo to take a picture of a " +
+                    "textbook page and have the AI write new comprehension questions about it, " +
+                    "or From Topic to draft a whole batch from just a topic name — a handful " +
+                    "is enough for a quiz to run.",
                 style = MaterialTheme.typography.bodyMedium
             )
         } else {
@@ -194,11 +237,15 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
         TopicBatchDialog(
             onGenerate = { topic, count ->
                 showTopicDialog = false
+                topicBusy = true
+                topicBusyLabel = "$count question${if (count == 1) "" else "s"} on \"$topic\""
+                errorMessage = null
                 coroutineScope.launch {
                     when (val result = QuestionAiGenerator.generateBatchFromTopic(context, topic, count)) {
                         is QuestionAiGenerator.BatchResult.Success -> openBatchReview(result.questions)
                         is QuestionAiGenerator.BatchResult.Unavailable -> errorMessage = result.reason
                     }
+                    topicBusy = false
                 }
             },
             onDismiss = { showTopicDialog = false }
@@ -234,7 +281,8 @@ private fun TopicBatchDialog(onGenerate: (topic: String, count: Int) -> Unit, on
             Column {
                 Text(
                     "The AI will write a new set of questions from scratch — you'll review " +
-                        "every one before anything is saved.",
+                        "every one before anything is saved. On a real phone this can take a " +
+                        "minute or two once you tap Generate; keep the app open until it's done.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(12.dp))
@@ -267,9 +315,9 @@ private fun TopicBatchDialog(onGenerate: (topic: String, count: Int) -> Unit, on
 }
 
 /** Full-screen review step shown after a batch of AI-drafted questions comes back — from
- * "From Topic" or from splitting a multi-question scan. Every field stays editable, any draft
- * can be dropped individually, and nothing reaches the question bank until "Save All" — same
- * "AI drafts, parent decides" contract as the single-question flow. */
+ * "From Topic" or from scanning a photo. Every field stays editable, any draft can be dropped
+ * individually, and nothing reaches the question bank until "Save All" — same "AI drafts,
+ * parent decides" contract as the single-question flow. */
 @Composable
 private fun QuestionBatchReviewContent(
     drafts: List<DraftQuestionState>,
