@@ -19,6 +19,7 @@ import com.learntoplay.app.ai.QuestionAiGenerator
 import com.learntoplay.app.data.db.entities.QuestionEntity
 import com.learntoplay.app.data.db.entities.toImagePathsColumn
 import com.learntoplay.app.util.ScannedImage
+import com.learntoplay.app.util.ScannedTextBlock
 import com.learntoplay.app.util.rememberPhotoScanLauncher
 import kotlinx.coroutines.launch
 
@@ -53,6 +54,11 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
     // failed copy.
     val scannedPages = remember { mutableStateListOf<String>() }
     val scannedPageImages = remember { mutableStateListOf<String>() }
+    // OCR'd text blocks with their on-page position, across every photo in the current session
+    // — used to guess which part of the page(s) a given generated question is actually about,
+    // so it can be shown a crop of just that region instead of the whole page. See
+    // QuestionAiGenerator.matchAndCropRegion.
+    val scannedBlocks = remember { mutableStateListOf<ScannedTextBlock>() }
     var showPageChoiceDialog by remember { mutableStateOf(false) }
 
     var showTopicDialog by remember { mutableStateOf(false) }
@@ -85,13 +91,15 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
         showPageChoiceDialog = false
         val pages = scannedPages.toList()
         val images = scannedPageImages.toList()
+        val blocks = scannedBlocks.toList()
         scannedPages.clear()
         scannedPageImages.clear()
+        scannedBlocks.clear()
         if (pages.isEmpty()) return
         scanBusyLabel = if (pages.size == 1) "your photo" else "your ${pages.size} photos"
         scanBusy = true
         coroutineScope.launch {
-            when (val result = QuestionAiGenerator.generateComprehensionQuestionsFromScan(context, pages, images)) {
+            when (val result = QuestionAiGenerator.generateComprehensionQuestionsFromScan(context, pages, images, blocks)) {
                 is QuestionAiGenerator.BatchResult.Success -> openBatchReview(result.questions)
                 is QuestionAiGenerator.BatchResult.Unavailable -> {
                     errorMessage = result.reason
@@ -118,9 +126,10 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
     // manual single-question dialog with raw OCR text when there's no AI model on this device at
     // all (e.g. the emulator) or the model couldn't produce a readable result.
     val launchScan = rememberPhotoScanLauncher(
-        onTextRecognized = { text, imagePath ->
+        onTextRecognized = { text, imagePath, blocks ->
             scannedPages.add(text)
             imagePath?.let { scannedPageImages.add(it) }
+            scannedBlocks.addAll(blocks)
             if (scannedPages.size >= MAX_SCAN_PAGES) {
                 errorMessage = "Reached the $MAX_SCAN_PAGES-page limit — generating questions from all $MAX_SCAN_PAGES pages now."
                 generateFromScannedPages()
@@ -309,7 +318,12 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
             maxPages = MAX_SCAN_PAGES,
             onAddAnotherPage = { showPageChoiceDialog = false; launchScan() },
             onGenerateNow = { generateFromScannedPages() },
-            onCancel = { scannedPages.clear(); scannedPageImages.clear(); showPageChoiceDialog = false }
+            onCancel = {
+                scannedPages.clear()
+                scannedPageImages.clear()
+                scannedBlocks.clear()
+                showPageChoiceDialog = false
+            }
         )
     }
 }

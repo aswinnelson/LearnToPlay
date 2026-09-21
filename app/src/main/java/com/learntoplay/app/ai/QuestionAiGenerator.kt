@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions
+import com.learntoplay.app.util.ScannedTextBlock
+import com.learntoplay.app.util.cropAndSaveRegion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -74,6 +76,21 @@ object QuestionAiGenerator {
      * were scanned (see [buildComprehensionPrompt]), so adding more pages trims each page's
      * share rather than blowing the total budget. */
     private const val MAX_SCAN_CHARS_TOTAL = 3000
+
+    /** Minimum number of [significantTokens] a scanned page's OCR block must share with a
+     * generated question before [matchAndCropRegion] trusts it enough to crop that region —
+     * below this, the shared word(s) are treated as coincidental rather than a real topic match. */
+    private const val MIN_MATCH_TOKENS = 1
+
+    /** Words common enough to show up in almost any question regardless of topic — excluded from
+     * [significantTokens] so they don't inflate every block's match score equally and drown out
+     * the words that actually identify what a question is about. Deliberately short; the goal is
+     * filtering out grammatical noise, not building a real stopword list. */
+    private val MATCH_STOPWORDS = setOf(
+        "the", "and", "for", "are", "was", "were", "this", "that", "these", "those",
+        "how", "what", "which", "does", "did", "show", "shows", "shown", "many", "much",
+        "correct", "answer", "option", "options", "question", "true", "false", "not"
+    )
 
     @Volatile
     private var inference: LlmInference? = null
@@ -166,13 +183,17 @@ object QuestionAiGenerator {
      * regardless of how much material was actually covered. Returns [BatchResult.Unavailable]
      * (rather than throwing) when the model isn't installed, so the caller can fall back to the
      * original manual-entry flow instead of breaking scanning entirely. [imagePaths] (the
-     * persisted photo(s) for this scan session, if any — see PhotoScanCapture) is attached as-is
-     * to every question in the returned batch, so the parent/child can see the actual scanned
-     * page(s) alongside what might otherwise be a vaguely-worded question. */
+     * persisted photo(s) for this scan session, if any — see PhotoScanCapture) is the fallback
+     * image for a question when nothing better can be found; [blocks] (that session's OCR'd text
+     * blocks with position, also from PhotoScanCapture) lets [matchAndCropRegion] try to narrow
+     * that down to just the part of the page a given question is actually about — see its doc
+     * for how. Either way, the parent/child ends up seeing a picture of the actual scanned
+     * material alongside what might otherwise be a vaguely-worded question. */
     suspend fun generateComprehensionQuestionsFromScan(
         context: Context,
         scannedPages: List<String>,
         imagePaths: List<String> = emptyList(),
+        blocks: List<ScannedTextBlock> = emptyList(),
         count: Int = defaultScanQuestionCount(scannedPages.size)
     ): BatchResult =
         withContext(Dispatchers.IO) {
@@ -189,13 +210,17 @@ object QuestionAiGenerator {
                     "(${response.length} chars, ${pages.size} page(s)): $response")
                 // The model sometimes writes more (or fewer) questions than asked for — cap to
                 // what the parent actually requested rather than dumping every extra one on
-                // them in the review screen. Every question in this batch was drafted from the
-                // same combined scan session, so all of them carry every page photo from that
-                // session — there's no reliable way to tell which specific page a given
-                // question came from once the model has written its reply, and showing "maybe
-                // more than the one relevant page" is a better failure mode than showing none.
-                val parsed = parseBatchResponse(response)?.take(askedFor)
-                    ?.map { it.copy(imagePaths = imagePaths) }
+                // them in the review screen. For each question, try to find the one OCR block
+                // on the page(s) its wording actually matches (e.g. the specific pictograph it's
+                // asking about on a page with several) and crop just that region — a scanned
+                // page can cover more than one question's worth of content, and showing every
+                // question the entire page is otherwise both less useful and more cluttered than
+                // showing just the relevant part. Falls back to every page photo, unmatched
+                // (the previous behavior), when no confident match is found for a question.
+                val parsed = parseBatchResponse(response)?.take(askedFor)?.map { draft ->
+                    val croppedPath = matchAndCropRegion(context, draft, blocks)
+                    draft.copy(imagePaths = if (croppedPath != null) listOf(croppedPath) else imagePaths)
+                }
                 if (parsed.isNullOrEmpty()) {
                     BatchResult.Unavailable(
                         "Couldn't write questions from that scan. Try again with a clearer, " +
@@ -208,6 +233,53 @@ object QuestionAiGenerator {
                 BatchResult.Unavailable("AI generation failed (${e.message ?: "unknown error"}).")
             }
         }
+
+    /** Word-overlap heuristic for guessing which OCR'd block of a scanned page (if any) a
+     * generated [draft] question is actually about — e.g. picking out just the "storybooks"
+     * pictograph's block on a page with several, rather than always falling back to the whole
+     * page. Scores every block by how many [significantTokens] it shares with the question's
+     * prompt + options, keeps the best-scoring one, and requires at least [MIN_MATCH_TOKENS]
+     * shared words before trusting the guess enough to crop — one incidental shared word isn't
+     * strong enough signal, and cropping the wrong part of the page would be worse than just
+     * showing the whole thing. On a confident match, crops that block's region (plus padding,
+     * to catch nearby icons/labels the OCR split into separate blocks) via [cropAndSaveRegion]
+     * and returns the new file's path; returns null (not a hard failure) whenever there's
+     * nothing to match against, no confident match, or the crop itself fails, so the caller can
+     * fall back to the full page image(s) instead. */
+    private fun matchAndCropRegion(
+        context: Context,
+        draft: DraftQuestion,
+        blocks: List<ScannedTextBlock>
+    ): String? {
+        if (blocks.isEmpty()) return null
+        val questionTokens = significantTokens(draft.prompt + " " + draft.options.joinToString(" "))
+        if (questionTokens.isEmpty()) return null
+
+        var bestBlock: ScannedTextBlock? = null
+        var bestScore = 0
+        for (block in blocks) {
+            val score = questionTokens.intersect(significantTokens(block.text)).size
+            if (score > bestScore) {
+                bestScore = score
+                bestBlock = block
+            }
+        }
+        val block = bestBlock ?: return null
+        if (bestScore < MIN_MATCH_TOKENS) return null
+
+        return cropAndSaveRegion(context, block.imagePath, block.left, block.top, block.right, block.bottom)
+    }
+
+    /** Lowercased alphanumeric words longer than 2 characters, minus [MATCH_STOPWORDS] — the
+     * vocabulary [matchAndCropRegion] scores blocks against. Short/common words (articles,
+     * question words like "how"/"what", generic terms like "show"/"many") appear in nearly every
+     * question regardless of topic and would otherwise match everything on the page equally,
+     * defeating the point of scoring at all. */
+    private fun significantTokens(text: String): Set<String> =
+        Regex("""[A-Za-z0-9]+""").findAll(text.lowercase())
+            .map { it.value }
+            .filter { it.length > 2 && it !in MATCH_STOPWORDS }
+            .toSet()
 
     /** One page still asks for [DEFAULT_SCAN_QUESTION_COUNT]; each additional page in the same
      * session adds a couple more, up to the same 10-question ceiling every batch path respects

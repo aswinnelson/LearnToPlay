@@ -32,15 +32,19 @@ import java.io.File
  * type a question by hand.
  *
  * On success, the captured photo is also copied to permanent app-private storage (see
- * [persistScanImageOrNull]) and its path handed back alongside the text, so a generated
- * question can show the actual photographed page next to a possibly-vague AI question — see
- * QuestionEntity.imagePaths.
+ * [persistScanImageOrNull]) and its path handed back alongside the text, so a generated question
+ * can show the actual photographed page next to a possibly-vague AI question — see
+ * QuestionEntity.imagePaths. [ScannedTextBlock]s (ML Kit's own per-block text + position, which
+ * this flow previously discarded in favor of the flattened full-page string) are handed back too,
+ * so a question about one specific part of a multi-section page (several pictographs, say) can
+ * later be matched to just that region instead of always showing the whole photo — see
+ * QuestionAiGenerator's per-question image matching.
  *
  * @return a function that starts the capture-and-recognize flow when called (wire to a button).
  */
 @Composable
 fun rememberPhotoScanLauncher(
-    onTextRecognized: (text: String, imagePath: String?) -> Unit,
+    onTextRecognized: (text: String, imagePath: String?, blocks: List<ScannedTextBlock>) -> Unit,
     onError: (String) -> Unit
 ): () -> Unit {
     val context = LocalContext.current
@@ -67,9 +71,16 @@ fun rememberPhotoScanLauncher(
                         } else {
                             // A photo-save hiccup here (rare — disk full, etc.) shouldn't block
                             // generating the question itself; onTextRecognized just gets a null
-                            // path and the question ends up with no attached image, same as
-                            // before this feature existed.
-                            onTextRecognized(text, persistScanImageOrNull(context, file))
+                            // path and no blocks, and the question ends up with no attached
+                            // image, same as before this feature existed.
+                            val imagePath = persistScanImageOrNull(context, file)
+                            val blocks = if (imagePath == null) emptyList() else result.textBlocks.mapNotNull { block ->
+                                val box = block.boundingBox ?: return@mapNotNull null
+                                val blockText = block.text.trim()
+                                if (blockText.isBlank()) return@mapNotNull null
+                                ScannedTextBlock(imagePath, blockText, box.left, box.top, box.right, box.bottom)
+                            }
+                            onTextRecognized(text, imagePath, blocks)
                         }
                     }
                     .addOnFailureListener {
@@ -109,9 +120,10 @@ private fun createScanImageFile(context: Context): File {
  *
  * Note: nothing currently deletes these once copied, even if the parent later discards the
  * drafted question(s) that referenced them (Discard All / removing an individual draft in
- * ManageQuestionsScreen) — a handful of orphaned JPEGs from declined scans is an acceptable
- * trade for now against the complexity of tracking "was this ever saved," but worth revisiting
- * if scanning becomes heavy, frequent usage. */
+ * ManageQuestionsScreen), and each auto-cropped region (see ScannedImage.cropAndSaveRegion) adds
+ * its own extra file alongside the full page — a handful of orphaned JPEGs from declined scans
+ * is an acceptable trade for now against the complexity of tracking "was this ever saved," but
+ * worth revisiting if scanning becomes heavy, frequent usage. */
 private fun persistScanImageOrNull(context: Context, tempFile: File): String? = runCatching {
     val dir = File(context.filesDir, "question_images").apply { mkdirs() }
     val dest = File(dir, tempFile.name)
