@@ -10,6 +10,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.learntoplay.app.data.db.entities.imagePathList
+import com.learntoplay.app.util.ScannedImage
 
 @Composable
 fun QuizScreen(viewModel: QuizViewModel, onDone: () -> Unit) {
@@ -46,6 +48,22 @@ fun QuizScreen(viewModel: QuizViewModel, onDone: () -> Unit) {
                     Text(state.curriculumLabel, style = MaterialTheme.typography.labelMedium)
                     Spacer(Modifier.height(24.dp))
                     Text(q.prompt, style = MaterialTheme.typography.headlineSmall)
+
+                    // The scanned page photo(s) this question was drafted from, if any — shown
+                    // right under the prompt so the child can look at the actual table/diagram/
+                    // figure a comprehension question is asking about instead of having to work
+                    // from a possibly ambiguous text description of it alone.
+                    val images = q.imagePathList()
+                    if (images.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        images.forEach { path ->
+                            ScannedImage(
+                                path = path,
+                                modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp).padding(bottom = 8.dp)
+                            )
+                        }
+                    }
+
                     Spacer(Modifier.height(24.dp))
                     listOf("A" to q.optionA, "B" to q.optionB, "C" to q.optionC, "D" to q.optionD)
                         .forEach { (key, text) ->

@@ -31,22 +31,29 @@ import java.io.File
  * to just the question, and correct in the existing question-edit dialog — same place they'd
  * type a question by hand.
  *
+ * On success, the captured photo is also copied to permanent app-private storage (see
+ * [persistScanImageOrNull]) and its path handed back alongside the text, so a generated
+ * question can show the actual photographed page next to a possibly-vague AI question — see
+ * QuestionEntity.imagePaths.
+ *
  * @return a function that starts the capture-and-recognize flow when called (wire to a button).
  */
 @Composable
 fun rememberPhotoScanLauncher(
-    onTextRecognized: (String) -> Unit,
+    onTextRecognized: (text: String, imagePath: String?) -> Unit,
     onError: (String) -> Unit
 ): () -> Unit {
     val context = LocalContext.current
     var pendingUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingFile by remember { mutableStateOf<File?>(null) }
     val recognizer = remember { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
 
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
     ) { capturedOk ->
         val uri = pendingUri
-        if (!capturedOk || uri == null) {
+        val file = pendingFile
+        if (!capturedOk || uri == null || file == null) {
             onError("Photo was canceled — nothing was scanned.")
             return@rememberLauncherForActivityResult
         }
@@ -58,7 +65,11 @@ fun rememberPhotoScanLauncher(
                         if (text.isBlank()) {
                             onError("Couldn't find readable text in that photo — try a closer, well-lit shot.")
                         } else {
-                            onTextRecognized(text)
+                            // A photo-save hiccup here (rare — disk full, etc.) shouldn't block
+                            // generating the question itself; onTextRecognized just gets a null
+                            // path and the question ends up with no attached image, same as
+                            // before this feature existed.
+                            onTextRecognized(text, persistScanImageOrNull(context, file))
                         }
                     }
                     .addOnFailureListener {
@@ -71,16 +82,39 @@ fun rememberPhotoScanLauncher(
     }
 
     return {
-        val uri = createScanImageUri(context)
+        val file = createScanImageFile(context)
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         pendingUri = uri
+        pendingFile = file
         cameraLauncher.launch(uri)
     }
 }
 
-/** A fresh content:// Uri (via FileProvider) for the camera app to write the next photo into,
- * under a scratch cache folder — nothing here is meant to persist past the OCR pass. */
-private fun createScanImageUri(context: Context): Uri {
+/** A fresh scratch file (under the app's cache dir) for the camera app to write the next photo
+ * into. Cache is fine for this temporary copy — the camera app just needs somewhere to write —
+ * but is NOT where a photo that ends up attached to a saved question should live long-term; see
+ * [persistScanImageOrNull]. */
+private fun createScanImageFile(context: Context): File {
     val dir = File(context.cacheDir, "scanned_questions").apply { mkdirs() }
-    val file = File(dir, "scan_${System.currentTimeMillis()}.jpg")
-    return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    return File(dir, "scan_${System.currentTimeMillis()}.jpg")
 }
+
+/** Copies a just-captured scan photo out of the cache directory into permanent app-private
+ * storage (`filesDir/question_images/`). The cache directory it starts in can be cleared by
+ * Android at any time — low storage, the user tapping "Clear cache", etc. — which would
+ * silently break any saved question still pointing at it; files under `filesDir` persist for as
+ * long as the app is installed. Returns null (rather than throwing) on any failure, so the
+ * caller can fall back to generating the question without an attached image instead of failing
+ * the whole scan over a copy error.
+ *
+ * Note: nothing currently deletes these once copied, even if the parent later discards the
+ * drafted question(s) that referenced them (Discard All / removing an individual draft in
+ * ManageQuestionsScreen) — a handful of orphaned JPEGs from declined scans is an acceptable
+ * trade for now against the complexity of tracking "was this ever saved," but worth revisiting
+ * if scanning becomes heavy, frequent usage. */
+private fun persistScanImageOrNull(context: Context, tempFile: File): String? = runCatching {
+    val dir = File(context.filesDir, "question_images").apply { mkdirs() }
+    val dest = File(dir, tempFile.name)
+    tempFile.copyTo(dest, overwrite = true)
+    dest.absolutePath
+}.getOrNull()

@@ -17,6 +17,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.learntoplay.app.ai.QuestionAiGenerator
 import com.learntoplay.app.data.db.entities.QuestionEntity
+import com.learntoplay.app.data.db.entities.toImagePathsColumn
+import com.learntoplay.app.util.ScannedImage
 import com.learntoplay.app.util.rememberPhotoScanLauncher
 import kotlinx.coroutines.launch
 
@@ -44,8 +46,13 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
 
     // Pages accumulated in the current "Scan Photo" session, in the order they were taken —
     // cleared once questions are generated (or the session is canceled). Empty means no scan is
-    // in progress.
+    // in progress. scannedPageImages runs in parallel with scannedPages (same index = same
+    // photo) but can be shorter if persisting a photo failed for one page — see
+    // PhotoScanCapture.persistScanImageOrNull — so every generated question can still show
+    // whichever page photos were actually saved rather than losing the whole batch over one
+    // failed copy.
     val scannedPages = remember { mutableStateListOf<String>() }
+    val scannedPageImages = remember { mutableStateListOf<String>() }
     var showPageChoiceDialog by remember { mutableStateOf(false) }
 
     var showTopicDialog by remember { mutableStateOf(false) }
@@ -77,18 +84,22 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
     fun generateFromScannedPages() {
         showPageChoiceDialog = false
         val pages = scannedPages.toList()
+        val images = scannedPageImages.toList()
         scannedPages.clear()
+        scannedPageImages.clear()
         if (pages.isEmpty()) return
         scanBusyLabel = if (pages.size == 1) "your photo" else "your ${pages.size} photos"
         scanBusy = true
         coroutineScope.launch {
-            when (val result = QuestionAiGenerator.generateComprehensionQuestionsFromScan(context, pages)) {
+            when (val result = QuestionAiGenerator.generateComprehensionQuestionsFromScan(context, pages, images)) {
                 is QuestionAiGenerator.BatchResult.Success -> openBatchReview(result.questions)
                 is QuestionAiGenerator.BatchResult.Unavailable -> {
                     errorMessage = result.reason
                     // Fall back to the manual single-question dialog, pre-filled with every
                     // scanned page's raw text (separated so it's still clear where one page
-                    // ends and the next begins) for the parent to trim down by hand.
+                    // ends and the next begins) for the parent to trim down by hand. The manual
+                    // dialog doesn't support attaching an image yet, so the photo(s) themselves
+                    // aren't carried over here — only their OCR'd text.
                     scannedText = pages.joinToString("\n\n---\n\n")
                     showAddDialog = true
                 }
@@ -107,8 +118,9 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
     // manual single-question dialog with raw OCR text when there's no AI model on this device at
     // all (e.g. the emulator) or the model couldn't produce a readable result.
     val launchScan = rememberPhotoScanLauncher(
-        onTextRecognized = { text ->
+        onTextRecognized = { text, imagePath ->
             scannedPages.add(text)
+            imagePath?.let { scannedPageImages.add(it) }
             if (scannedPages.size >= MAX_SCAN_PAGES) {
                 errorMessage = "Reached the $MAX_SCAN_PAGES-page limit — generating questions from all $MAX_SCAN_PAGES pages now."
                 generateFromScannedPages()
@@ -141,7 +153,8 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
                                 correctOption = d.correctOption,
                                 timesAsked = 0,
                                 timesCorrect = 0,
-                                lastAskedAtEpochMillis = 0L
+                                lastAskedAtEpochMillis = 0L,
+                                imagePaths = d.imagePaths.toImagePathsColumn()
                             )
                         )
                     }
@@ -296,7 +309,7 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
             maxPages = MAX_SCAN_PAGES,
             onAddAnotherPage = { showPageChoiceDialog = false; launchScan() },
             onGenerateNow = { generateFromScannedPages() },
-            onCancel = { scannedPages.clear(); showPageChoiceDialog = false }
+            onCancel = { scannedPages.clear(); scannedPageImages.clear(); showPageChoiceDialog = false }
         )
     }
 }
@@ -341,6 +354,7 @@ private fun ScanPageChoiceDialog(
  * can be edited in place before saving — mirrors [QuestionEntity]'s fields minus the ones that
  * only make sense for an already-saved question (id, ask stats). */
 private class DraftQuestionState(seed: QuestionAiGenerator.DraftQuestion) {
+    val imagePaths: List<String> = seed.imagePaths
     var prompt by mutableStateOf(seed.prompt)
     var optionA by mutableStateOf(seed.options.getOrElse(0) { "" })
     var optionB by mutableStateOf(seed.options.getOrElse(1) { "" })
@@ -437,6 +451,15 @@ private fun QuestionBatchReviewContent(
                                 IconButton(onClick = { onRemove(index) }) {
                                     Icon(Icons.Default.Delete, contentDescription = "Remove this draft")
                                 }
+                            }
+                            // The scanned page photo(s) this question was drafted from, if any —
+                            // lets the parent see exactly what a vaguely-worded AI question is
+                            // actually referring to before deciding whether to save it.
+                            draft.imagePaths.forEach { path ->
+                                ScannedImage(
+                                    path = path,
+                                    modifier = Modifier.fillMaxWidth().height(140.dp).padding(bottom = 6.dp)
+                                )
                             }
                             OutlinedTextField(
                                 value = draft.prompt,
@@ -593,7 +616,11 @@ private fun QuestionEditDialog(
                             correctOption = correctOption,
                             timesAsked = existing?.timesAsked ?: 0,
                             timesCorrect = existing?.timesCorrect ?: 0,
-                            lastAskedAtEpochMillis = existing?.lastAskedAtEpochMillis ?: 0L
+                            lastAskedAtEpochMillis = existing?.lastAskedAtEpochMillis ?: 0L,
+                            // Manual add/edit doesn't attach or remove images in this dialog —
+                            // preserve whatever an existing question already had; a brand new
+                            // manually-typed question simply has none.
+                            imagePaths = existing?.imagePaths
                         )
                     )
                 }

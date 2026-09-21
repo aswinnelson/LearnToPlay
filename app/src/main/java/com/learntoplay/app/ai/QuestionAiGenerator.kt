@@ -79,8 +79,15 @@ object QuestionAiGenerator {
     private var inference: LlmInference? = null
 
     /** One AI-drafted question with its four options and which one is correct — always shown
-     * to the parent for review before anything reaches the question bank. */
-    data class DraftQuestion(val prompt: String, val options: List<String>, val correctIndex: Int)
+     * to the parent for review before anything reaches the question bank. [imagePaths] carries
+     * the scanned page photo(s) (if any) this question was drafted from — see
+     * QuestionEntity.imagePaths — and is empty for a "From Topic" or manually-typed question. */
+    data class DraftQuestion(
+        val prompt: String,
+        val options: List<String>,
+        val correctIndex: Int,
+        val imagePaths: List<String> = emptyList()
+    )
 
     sealed interface Result {
         data class Success(val options: List<String>, val correctIndex: Int) : Result
@@ -158,10 +165,14 @@ object QuestionAiGenerator {
      * little with how many pages were scanned rather than asking for the same fixed count
      * regardless of how much material was actually covered. Returns [BatchResult.Unavailable]
      * (rather than throwing) when the model isn't installed, so the caller can fall back to the
-     * original manual-entry flow instead of breaking scanning entirely. */
+     * original manual-entry flow instead of breaking scanning entirely. [imagePaths] (the
+     * persisted photo(s) for this scan session, if any — see PhotoScanCapture) is attached as-is
+     * to every question in the returned batch, so the parent/child can see the actual scanned
+     * page(s) alongside what might otherwise be a vaguely-worded question. */
     suspend fun generateComprehensionQuestionsFromScan(
         context: Context,
         scannedPages: List<String>,
+        imagePaths: List<String> = emptyList(),
         count: Int = defaultScanQuestionCount(scannedPages.size)
     ): BatchResult =
         withContext(Dispatchers.IO) {
@@ -178,8 +189,13 @@ object QuestionAiGenerator {
                     "(${response.length} chars, ${pages.size} page(s)): $response")
                 // The model sometimes writes more (or fewer) questions than asked for — cap to
                 // what the parent actually requested rather than dumping every extra one on
-                // them in the review screen.
+                // them in the review screen. Every question in this batch was drafted from the
+                // same combined scan session, so all of them carry every page photo from that
+                // session — there's no reliable way to tell which specific page a given
+                // question came from once the model has written its reply, and showing "maybe
+                // more than the one relevant page" is a better failure mode than showing none.
                 val parsed = parseBatchResponse(response)?.take(askedFor)
+                    ?.map { it.copy(imagePaths = imagePaths) }
                 if (parsed.isNullOrEmpty()) {
                     BatchResult.Unavailable(
                         "Couldn't write questions from that scan. Try again with a clearer, " +
