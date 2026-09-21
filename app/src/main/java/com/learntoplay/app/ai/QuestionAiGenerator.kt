@@ -16,10 +16,11 @@ import java.io.File
  *    options (the original Stage-AI feature).
  *  - [generateBatchFromTopic]: given just a topic/chapter, write a whole new set of questions
  *    from scratch.
- *  - [generateComprehensionQuestionsFromScan]: given raw OCR text from a photo of whatever the
- *    child is studying (a textbook page, notes, a worksheet), write a fresh batch of
- *    comprehension-check questions about that material — deliberately NOT the same questions
- *    printed on the page (if any), so a quiz built from it actually tests whether the child
+ *  - [generateComprehensionQuestionsFromScan]: given raw OCR text from one or more photos of
+ *    whatever the child is studying (a textbook page, notes, a worksheet — a parent can scan
+ *    several pages of the same topic before generating), write a fresh batch of
+ *    comprehension-check questions covering that material — deliberately NOT the same questions
+ *    printed on the page(s) (if any), so a quiz built from it actually tests whether the child
  *    understood the concept rather than just letting them re-answer something they may have
  *    already seen the answer to.
  *
@@ -50,9 +51,12 @@ object QuestionAiGenerator {
             "(see the Stage C setup notes), then try again. This only works on a real phone, " +
             "not the emulator."
 
-    /** Default number of comprehension questions to draft from one scanned page — enough to
-     * meaningfully check understanding without asking the model (and the parent reviewing the
-     * result) to churn through more than a photo's worth of content usually supports. */
+    /** Default number of comprehension questions to draft from a single scanned page — enough
+     * to meaningfully check understanding without asking the model (and the parent reviewing
+     * the result) to churn through more than a photo's worth of content usually supports. When
+     * more than one page is scanned in the same session, [defaultScanQuestionCount] scales this
+     * up a bit rather than asking the same fixed count regardless of how much material was
+     * actually covered. */
     private const val DEFAULT_SCAN_QUESTION_COUNT = 5
 
     /** Matches the ekv2048 context window the pushed model file is compiled for (see the
@@ -63,11 +67,13 @@ object QuestionAiGenerator {
      * plus instructions plus several whole question blocks to write back out. */
     private const val MAX_TOKENS = 2048
 
-    /** Safety cap on how much OCR'd page text goes into the comprehension prompt — a generous
-     * amount for a single photographed page, but bounded so an unusually text-dense scan can't
-     * eat the entire [MAX_TOKENS] budget and leave no room for the model to write its questions
-     * back out. */
-    private const val MAX_SCAN_CHARS = 2500
+    /** Safety cap on how much OCR'd text — summed across every page scanned in one session —
+     * goes into the comprehension prompt. Generous for a handful of photographed pages, but
+     * bounded so a multi-page scan can't eat the entire [MAX_TOKENS] budget and leave no room
+     * for the model to write its questions back out. Split evenly across however many pages
+     * were scanned (see [buildComprehensionPrompt]), so adding more pages trims each page's
+     * share rather than blowing the total budget. */
+    private const val MAX_SCAN_CHARS_TOTAL = 3000
 
     @Volatile
     private var inference: LlmInference? = null
@@ -140,31 +146,36 @@ object QuestionAiGenerator {
             }
         }
 
-    /** Given raw OCR text from a photo of whatever the child is studying, writes a fresh batch
-     * of [count] (1–10) comprehension-check questions about the concepts in that text — not a
-     * copy, reformat, or light reword of anything already printed on the page. The point is to
-     * check whether the child actually understood the material, so the AI is explicitly told to
-     * write its own original questions rather than lift the page's. Works whether the photo is
-     * a worksheet with existing questions, a plain textbook page, or class notes — it doesn't
-     * need the page to already contain questions. Returns [BatchResult.Unavailable] (rather
-     * than throwing) when the model isn't installed, so the caller can fall back to the
-     * original single-question-with-raw-text flow instead of breaking scanning entirely. */
+    /** Given raw OCR text from one or more photos of whatever the child is studying — a parent
+     * can take several photos of the same topic (e.g. consecutive textbook pages) in one Scan
+     * Photo session before generating — writes a fresh batch of [count] comprehension-check
+     * questions about the concepts covered across all of them combined. Not a copy, reformat,
+     * or light reword of anything already printed on any page. The point is to check whether
+     * the child actually understood the material, so the AI is explicitly told to write its own
+     * original questions rather than lift the pages'. Works whether the photos are a worksheet
+     * with existing questions, plain textbook pages, or class notes — they don't need to already
+     * contain questions. [count] defaults to [defaultScanQuestionCount], which scales up a
+     * little with how many pages were scanned rather than asking for the same fixed count
+     * regardless of how much material was actually covered. Returns [BatchResult.Unavailable]
+     * (rather than throwing) when the model isn't installed, so the caller can fall back to the
+     * original manual-entry flow instead of breaking scanning entirely. */
     suspend fun generateComprehensionQuestionsFromScan(
         context: Context,
-        scannedText: String,
-        count: Int = DEFAULT_SCAN_QUESTION_COUNT
+        scannedPages: List<String>,
+        count: Int = defaultScanQuestionCount(scannedPages.size)
     ): BatchResult =
         withContext(Dispatchers.IO) {
-            if (scannedText.isBlank()) {
+            val pages = scannedPages.map { it.trim() }.filter { it.isNotBlank() }
+            if (pages.isEmpty()) {
                 return@withContext BatchResult.Unavailable("Nothing was scanned.")
             }
             val llm = loadModelOrNull(context)
                 ?: return@withContext BatchResult.Unavailable(MODEL_MISSING_MESSAGE)
             try {
                 val askedFor = count.coerceIn(1, 10)
-                val response = llm.generateResponse(buildComprehensionPrompt(scannedText, askedFor))
+                val response = llm.generateResponse(buildComprehensionPrompt(pages, askedFor))
                 Log.d(TAG, "generateComprehensionQuestionsFromScan raw response " +
-                    "(${response.length} chars): $response")
+                    "(${response.length} chars, ${pages.size} page(s)): $response")
                 // The model sometimes writes more (or fewer) questions than asked for — cap to
                 // what the parent actually requested rather than dumping every extra one on
                 // them in the review screen.
@@ -181,6 +192,13 @@ object QuestionAiGenerator {
                 BatchResult.Unavailable("AI generation failed (${e.message ?: "unknown error"}).")
             }
         }
+
+    /** One page still asks for [DEFAULT_SCAN_QUESTION_COUNT]; each additional page in the same
+     * session adds a couple more, up to the same 10-question ceiling every batch path respects
+     * — more scanned material can reasonably support more distinct questions, but the review
+     * screen and the model's own reply length shouldn't grow unbounded. */
+    private fun defaultScanQuestionCount(pageCount: Int): Int =
+        (DEFAULT_SCAN_QUESTION_COUNT + (pageCount - 1).coerceAtLeast(0) * 2).coerceIn(1, 10)
 
     private fun loadModelOrNull(context: Context): LlmInference? {
         if (!File(MODEL_PATH).exists()) return null
@@ -226,21 +244,33 @@ object QuestionAiGenerator {
         ---
     """.trimIndent()
 
-    private fun buildComprehensionPrompt(scannedText: String, count: Int): String {
-        val trimmedScan = scannedText.trim().let {
-            if (it.length > MAX_SCAN_CHARS) it.take(MAX_SCAN_CHARS) + "…" else it
-        }
+    /** Builds the comprehension-question prompt from one or more scanned pages. A single page
+     * is inlined as-is (matches the original single-photo prompt exactly). Multiple pages are
+     * each labeled ("Page 1:", "Page 2:", ...) and concatenated, with [MAX_SCAN_CHARS_TOTAL]
+     * split evenly across however many pages there are so a multi-page scan can't let any one
+     * page (or the total) blow the model's token budget. */
+    private fun buildComprehensionPrompt(scannedPages: List<String>, count: Int): String {
+        val perPageBudget = (MAX_SCAN_CHARS_TOTAL / scannedPages.size).coerceAtLeast(300)
+        val multiPage = scannedPages.size > 1
+        val pagesBlock = scannedPages.mapIndexed { index, page ->
+            val trimmed = page.let {
+                if (it.length > perPageBudget) it.take(perPageBudget) + "…" else it
+            }
+            if (multiPage) "Page ${index + 1}:\n$trimmed" else trimmed
+        }.joinToString("\n\n")
+        val sourceDescription = if (multiPage) "photos of ${scannedPages.size} pages" else "a photo of a page"
+        val materialReference = if (multiPage) "this text across all the pages" else "this text"
         return """
-        Below is text recognized from a photo of a page a child is studying — this could be a
+        Below is text recognized from $sourceDescription a child is studying — this could be a
         textbook page, class notes, or a worksheet. Ignore anything that isn't part of the
         actual lesson content (headings, page numbers, printed instructions like "Answer the
-        following"). Based on the concepts, facts, and ideas covered in this text, write exactly
-        $count NEW multiple-choice questions that check whether the child understood the
+        following"). Based on the concepts, facts, and ideas covered in $materialReference, write
+        exactly $count NEW multiple-choice questions that check whether the child understood the
         material. Do NOT simply copy, reformat, or lightly reword any questions that may already
-        be printed on the page — write original questions of your own, at a similar difficulty,
-        that a student who truly understood the material would be able to answer. For each
-        question, give exactly four short answer options labeled A to D with exactly one
-        correct answer. Reply with ONLY this format, one block per question, nothing else,
+        be printed on the page(s) — write original questions of your own, at a similar
+        difficulty, that a student who truly understood the material would be able to answer.
+        For each question, give exactly four short answer options labeled A to D with exactly
+        one correct answer. Reply with ONLY this format, one block per question, nothing else,
         separated by a line containing only ---:
 
         Q: <question text>
@@ -252,7 +282,7 @@ object QuestionAiGenerator {
         ---
 
         Scanned text:
-        $trimmedScan
+        $pagesBlock
         """.trimIndent()
     }
 
@@ -307,7 +337,7 @@ object QuestionAiGenerator {
     }
 
     /** The on-device model occasionally writes a literal two-character "\n" (backslash then n)
-     * inside a field instead of an actual line break — confirmed by seeing it verbatim in
+     * inside a field instead of an actual line break (confirmed by seeing it verbatim in
      * captured field text ("1 and 2\n"). [String.trim] only strips real whitespace, not that
      * literal escape sequence, so it was passing straight through into the review screen. This
      * strips it (and its escaped-tab cousin, just in case) wherever it shows up in a field, not

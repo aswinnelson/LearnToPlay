@@ -20,12 +20,18 @@ import com.learntoplay.app.data.db.entities.QuestionEntity
 import com.learntoplay.app.util.rememberPhotoScanLauncher
 import kotlinx.coroutines.launch
 
+/** Hard cap on how many pages a parent can add to one "Scan Photo" session before questions are
+ * generated automatically — keeps a single AI call (and the review list before it) from growing
+ * without bound. See [QuestionAiGenerator.generateComprehensionQuestionsFromScan]. */
+private const val MAX_SCAN_PAGES = 5
+
 /** Parent-facing question bank for one curriculum: add, edit, or remove multiple-choice
- * questions — typed by hand, started from a photo of whatever the child is studying (Stage C
- * OCR, now paired with on-device AI that writes fresh comprehension-check questions about that
- * page rather than just copying whatever's printed on it), and/or drafted from just a topic
- * name. Every AI path lands in a review step; nothing is saved to the question bank without the
- * parent explicitly saving it. */
+ * questions — typed by hand, started from one or more photos of whatever the child is studying
+ * (Stage C OCR, now paired with on-device AI that writes fresh comprehension-check questions
+ * about that content rather than just copying whatever's printed on it — a parent can scan
+ * several pages of the same topic before generating, and the questions cover all of them
+ * together), and/or drafted from just a topic name. Every AI path lands in a review step;
+ * nothing is saved to the question bank without the parent explicitly saving it. */
 @Composable
 fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBack: () -> Unit) {
     val questions by viewModel.observeQuestionsForCurriculum(curriculumId).collectAsState(initial = emptyList())
@@ -34,6 +40,13 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
     var scannedText by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var scanBusy by remember { mutableStateOf(false) }
+    var scanBusyLabel by remember { mutableStateOf("") }
+
+    // Pages accumulated in the current "Scan Photo" session, in the order they were taken —
+    // cleared once questions are generated (or the session is canceled). Empty means no scan is
+    // in progress.
+    val scannedPages = remember { mutableStateListOf<String>() }
+    var showPageChoiceDialog by remember { mutableStateOf(false) }
 
     var showTopicDialog by remember { mutableStateOf(false) }
     // True for the whole "From Topic" AI call, not just while the dialog is open — the dialog
@@ -57,25 +70,50 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
         showBatchReview = true
     }
 
-    // Taking a photo now always tries to go straight from picture to a ready-to-review batch of
-    // NEW comprehension questions about that page's content — not the same questions repeated,
-    // so a quiz built from it actually checks whether the child understood the material (see
+    // Ends the current scan session: takes whatever pages have been accumulated so far, clears
+    // them, and runs one AI call covering all of them together. Called either when the parent
+    // taps "Generate Questions Now" in the page-choice dialog, or automatically once
+    // [MAX_SCAN_PAGES] is reached.
+    fun generateFromScannedPages() {
+        showPageChoiceDialog = false
+        val pages = scannedPages.toList()
+        scannedPages.clear()
+        if (pages.isEmpty()) return
+        scanBusyLabel = if (pages.size == 1) "your photo" else "your ${pages.size} photos"
+        scanBusy = true
+        coroutineScope.launch {
+            when (val result = QuestionAiGenerator.generateComprehensionQuestionsFromScan(context, pages)) {
+                is QuestionAiGenerator.BatchResult.Success -> openBatchReview(result.questions)
+                is QuestionAiGenerator.BatchResult.Unavailable -> {
+                    errorMessage = result.reason
+                    // Fall back to the manual single-question dialog, pre-filled with every
+                    // scanned page's raw text (separated so it's still clear where one page
+                    // ends and the next begins) for the parent to trim down by hand.
+                    scannedText = pages.joinToString("\n\n---\n\n")
+                    showAddDialog = true
+                }
+            }
+            scanBusy = false
+        }
+    }
+
+    // Taking a photo adds it to the current scan session; after each one, the parent chooses
+    // whether to add another page (same topic, next page of the book) or generate questions
+    // now from everything scanned so far — see the page-choice dialog below. Reaching
+    // MAX_SCAN_PAGES skips the choice and generates immediately. Each generated batch is NEW
+    // comprehension questions about the content, not the same questions repeated, so a quiz
+    // built from it actually checks whether the child understood the material (see
     // QuestionAiGenerator.generateComprehensionQuestionsFromScan). Only falls back to the old
     // manual single-question dialog with raw OCR text when there's no AI model on this device at
     // all (e.g. the emulator) or the model couldn't produce a readable result.
     val launchScan = rememberPhotoScanLauncher(
         onTextRecognized = { text ->
-            scanBusy = true
-            coroutineScope.launch {
-                when (val result = QuestionAiGenerator.generateComprehensionQuestionsFromScan(context, text)) {
-                    is QuestionAiGenerator.BatchResult.Success -> openBatchReview(result.questions)
-                    is QuestionAiGenerator.BatchResult.Unavailable -> {
-                        errorMessage = result.reason
-                        scannedText = text
-                        showAddDialog = true
-                    }
-                }
-                scanBusy = false
+            scannedPages.add(text)
+            if (scannedPages.size >= MAX_SCAN_PAGES) {
+                errorMessage = "Reached the $MAX_SCAN_PAGES-page limit — generating questions from all $MAX_SCAN_PAGES pages now."
+                generateFromScannedPages()
+            } else {
+                showPageChoiceDialog = true
             }
         },
         onError = { message -> errorMessage = message }
@@ -154,9 +192,9 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
                             "Drafting $topicBusyLabel… this can take a minute or two on this " +
                                 "phone. Keep the app open and on screen until it finishes."
                         } else {
-                            "Reading your photo and writing new comprehension questions about " +
-                                "it… this can take a minute or two on this phone. Keep the app " +
-                                "open until it finishes."
+                            "Writing new comprehension questions from $scanBusyLabel… this can " +
+                                "take a minute or two on this phone. Keep the app open until " +
+                                "it finishes."
                         },
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -183,7 +221,8 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
         if (questions.isEmpty()) {
             Text(
                 "No questions yet. Tap + to type one, Scan Photo to take a picture of a " +
-                    "textbook page and have the AI write new comprehension questions about it, " +
+                    "textbook page (you can scan several pages of the same topic before " +
+                    "generating) and have the AI write new comprehension questions about it, " +
                     "or From Topic to draft a whole batch from just a topic name — a handful " +
                     "is enough for a quiz to run.",
                 style = MaterialTheme.typography.bodyMedium
@@ -251,6 +290,51 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
             onDismiss = { showTopicDialog = false }
         )
     }
+    if (showPageChoiceDialog) {
+        ScanPageChoiceDialog(
+            pageCount = scannedPages.size,
+            maxPages = MAX_SCAN_PAGES,
+            onAddAnotherPage = { showPageChoiceDialog = false; launchScan() },
+            onGenerateNow = { generateFromScannedPages() },
+            onCancel = { scannedPages.clear(); showPageChoiceDialog = false }
+        )
+    }
+}
+
+/** Shown right after each photo is scanned into the current session: the parent decides whether
+ * to keep going (same topic, next page) or stop here and let the AI write questions covering
+ * everything scanned so far. Dismissing (tap outside / back) cancels the whole session rather
+ * than silently keeping partial pages around. */
+@Composable
+private fun ScanPageChoiceDialog(
+    pageCount: Int,
+    maxPages: Int,
+    onAddAnotherPage: () -> Unit,
+    onGenerateNow: () -> Unit,
+    onCancel: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(if (pageCount == 1) "Page scanned" else "$pageCount pages scanned") },
+        text = {
+            Text(
+                if (pageCount == 1) {
+                    "Add another page of the same topic before generating questions, or " +
+                        "generate now from just this one page (up to $maxPages pages total)."
+                } else {
+                    "Add another page of the same topic, or generate questions now covering " +
+                        "all $pageCount pages scanned so far (up to $maxPages pages total)."
+                },
+                style = MaterialTheme.typography.bodyMedium
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onAddAnotherPage) { Text("Add Another Page") }
+        },
+        dismissButton = {
+            TextButton(onClick = onGenerateNow) { Text("Generate Questions Now") }
+        }
+    )
 }
 
 /** One AI-drafted question's editable fields, backed by Compose state so the review list below
@@ -315,9 +399,9 @@ private fun TopicBatchDialog(onGenerate: (topic: String, count: Int) -> Unit, on
 }
 
 /** Full-screen review step shown after a batch of AI-drafted questions comes back — from
- * "From Topic" or from scanning a photo. Every field stays editable, any draft can be dropped
- * individually, and nothing reaches the question bank until "Save All" — same "AI drafts,
- * parent decides" contract as the single-question flow. */
+ * "From Topic" or from scanning one or more photos. Every field stays editable, any draft can be
+ * dropped individually, and nothing reaches the question bank until "Save All" — same "AI
+ * drafts, parent decides" contract as the single-question flow. */
 @Composable
 private fun QuestionBatchReviewContent(
     drafts: List<DraftQuestionState>,
