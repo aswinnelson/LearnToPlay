@@ -319,9 +319,11 @@ object QuestionAiGenerator {
     private fun buildBatchPrompt(topic: String, count: Int): String = """
         You are helping a parent build a multiple-choice quiz for their child on this topic:
         "${topic.trim()}". Write exactly $count different questions about it, appropriate for a
-        school-age child. For each question, give exactly four short answer options labeled A
-        to D with exactly one correct answer. Reply with ONLY this format, one block per
-        question, nothing else, separated by a line containing only ---:
+        school-age child. Ask concrete, specific questions with a single clear factual answer —
+        avoid vague or abstract questions about the topic in general (e.g. "Why is this topic
+        important?" or "What is this topic about?"). For each question, give exactly four short
+        answer options labeled A to D with exactly one correct answer. Reply with ONLY this
+        format, one block per question, nothing else, separated by a line containing only ---:
 
         Q: <question text>
         A) <option>
@@ -336,7 +338,12 @@ object QuestionAiGenerator {
      * is inlined as-is (matches the original single-photo prompt exactly). Multiple pages are
      * each labeled ("Page 1:", "Page 2:", ...) and concatenated, with [MAX_SCAN_CHARS_TOTAL]
      * split evenly across however many pages there are so a multi-page scan can't let any one
-     * page (or the total) blow the model's token budget. */
+     * page (or the total) blow the model's token budget. Explicitly steers away from abstract
+     * "meta" questions about the material itself (its purpose, layout, or how it's presented) —
+     * on-device generation kept defaulting to those ("What is the goal of the activity?", "How
+     * is the information presented?") instead of asking about the actual facts/numbers/names in
+     * the content, which is both harder for a child to answer meaningfully and rarely has a
+     * single unambiguous correct option among the four choices. */
     private fun buildComprehensionPrompt(scannedPages: List<String>, count: Int): String {
         val perPageBudget = (MAX_SCAN_CHARS_TOTAL / scannedPages.size).coerceAtLeast(300)
         val multiPage = scannedPages.size > 1
@@ -357,6 +364,12 @@ object QuestionAiGenerator {
         material. Do NOT simply copy, reformat, or lightly reword any questions that may already
         be printed on the page(s) — write original questions of your own, at a similar
         difficulty, that a student who truly understood the material would be able to answer.
+        Ask concrete questions about specific facts, numbers, names, quantities, steps, or
+        relationships that actually appear in the material — never ask abstract or "meta"
+        questions about the text or activity itself, such as "What is the goal of the activity?",
+        "How is the information presented?", or "What is this passage about?". A well-written
+        question should only be answerable by someone who read the specific content, not
+        guessable from the question's own wording.
         For each question, give exactly four short answer options labeled A to D with exactly
         one correct answer. Reply with ONLY this format, one block per question, nothing else,
         separated by a line containing only ---:

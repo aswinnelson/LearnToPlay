@@ -503,6 +503,11 @@ private fun QuestionBatchReviewContent(
     }
 }
 
+// Radio button + editable option text: deliberately NOT singleLine (a longer AI-drafted option
+// used to overflow the field and get cut off with no way to read the rest — see the "answers
+// cannot be read" bug this fixed), so long answers wrap to multiple lines instead of being
+// truncated. Top-aligned rather than centered so the radio button lines up with the first line
+// of a wrapped, multi-line answer rather than floating in the middle of it.
 @Composable
 private fun DraftOptionRow(
     letter: String,
@@ -511,13 +516,12 @@ private fun DraftOptionRow(
     selected: Boolean,
     onSelect: () -> Unit
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        RadioButton(selected = selected, onClick = onSelect)
+    Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
+        RadioButton(selected = selected, onClick = onSelect, modifier = Modifier.padding(top = 4.dp))
         OutlinedTextField(
             value = value,
             onValueChange = onValueChange,
             label = { Text("Option $letter") },
-            singleLine = true,
             modifier = Modifier.weight(1f)
         )
     }
@@ -644,6 +648,8 @@ private fun QuestionEditDialog(
     )
 }
 
+// See DraftOptionRow above — same fix, same reason: long manually-reviewed or AI-generated
+// option text should wrap rather than being cut off at the edge of the field.
 @Composable
 private fun OptionRow(
     letter: String,
@@ -652,13 +658,12 @@ private fun OptionRow(
     selected: Boolean,
     onSelect: () -> Unit
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        RadioButton(selected = selected, onClick = onSelect)
+    Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
+        RadioButton(selected = selected, onClick = onSelect, modifier = Modifier.padding(top = 4.dp))
         OutlinedTextField(
             value = value,
             onValueChange = onValueChange,
             label = { Text("Option $letter") },
-            singleLine = true,
             modifier = Modifier.weight(1f)
         )
     }
