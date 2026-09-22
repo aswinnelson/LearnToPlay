@@ -40,9 +40,12 @@ private const val MAX_SCAN_PAGES = 5
  * a teacher's WhatsApp message — see [incomingShare]), and/or drafted from just a topic name.
  * Every AI batch mixes in at least one fill-in-the-blank question alongside the multiple-choice
  * ones (see QuestionAiGenerator), so a quiz built from this bank isn't pure multiple-choice
- * guessing — see QuizRepository.getQuizQuestions for how that's enforced per-quiz. Every AI path
- * lands in a review step; nothing is saved to the question bank without the parent explicitly
- * saving it.
+ * guessing — see QuizRepository.getQuizQuestions for how that's enforced per-quiz. Every AI call
+ * also gets the curriculum's already-saved question prompts so it can steer away from repeating
+ * them, and any draft that still looks like a repeat (of the bank, or of an earlier draft in the
+ * same batch) is flagged in the review screen rather than silently dropped or silently kept. Every
+ * AI path lands in a review step; nothing is saved to the question bank without the parent
+ * explicitly saving it.
  *
  * [incomingShare], when non-null, is handled once on first composition (see the
  * `remember { incomingShare }` latch below) and fed into the very same scan-session pipeline a
@@ -124,7 +127,10 @@ fun ManageQuestionsScreen(
         scanBusyLabel = if (pages.size == 1) "your photo" else "your ${pages.size} photos"
         scanBusy = true
         coroutineScope.launch {
-            when (val result = QuestionAiGenerator.generateComprehensionQuestionsFromScan(context, pages, images, blocks)) {
+            val existingPrompts = questions.map { it.prompt }
+            when (val result = QuestionAiGenerator.generateComprehensionQuestionsFromScan(
+                context, pages, images, blocks, existingPrompts = existingPrompts
+            )) {
                 is QuestionAiGenerator.BatchResult.Success -> openBatchReview(result.questions)
                 is QuestionAiGenerator.BatchResult.Unavailable -> {
                     errorMessage = result.reason
@@ -371,8 +377,11 @@ fun ManageQuestionsScreen(
                 topicBusy = true
                 topicBusyLabel = "$count question${if (count == 1) "" else "s"} on \"$topic\""
                 errorMessage = null
+                val existingPrompts = questions.map { it.prompt }
                 coroutineScope.launch {
-                    when (val result = QuestionAiGenerator.generateBatchFromTopic(context, topic, count)) {
+                    when (val result = QuestionAiGenerator.generateBatchFromTopic(
+                        context, topic, count, existingPrompts = existingPrompts
+                    )) {
                         is QuestionAiGenerator.BatchResult.Success -> openBatchReview(result.questions)
                         is QuestionAiGenerator.BatchResult.Unavailable -> errorMessage = result.reason
                     }
@@ -438,14 +447,17 @@ private fun ScanPageChoiceDialog(
  * can be edited in place before saving — mirrors [QuestionEntity]'s fields minus the ones that
  * only make sense for an already-saved question (id, ask stats). [questionType] is fixed at
  * whatever the AI drafted it as (MCQ vs fill-in-the-blank) — not editable in review, matching
- * how other AI-decided shape (e.g. sourcePageImages) works here. [imagePaths] is mutable (not a
- * plain `val`) so the "Adjust picture" flow (see [ManualCropDialog]) can replace it in place —
+ * how other AI-decided shape (e.g. sourcePageImages) works here. [isLikelyDuplicate] is also
+ * fixed at whatever QuestionAiGenerator/QuestionSimilarity flagged it as — it's a hint for the
+ * parent while reviewing, not something they toggle. [imagePaths] is mutable (not a plain `val`)
+ * so the "Adjust picture" flow (see [ManualCropDialog]) can replace it in place —
  * [sourcePageImages] stays fixed at whatever the scan session originally produced, so a manual
  * re-crop always starts from the original full-resolution photo(s), never from an already
  * auto-cropped image. */
 private class DraftQuestionState(seed: QuestionAiGenerator.DraftQuestion) {
     val sourcePageImages: List<String> = seed.sourcePageImages
     val questionType: String = seed.questionType
+    val isLikelyDuplicate: Boolean = seed.isLikelyDuplicate
     var imagePaths by mutableStateOf(seed.imagePaths)
     var prompt by mutableStateOf(seed.prompt)
     var optionA by mutableStateOf(seed.options.getOrElse(0) { "" })
@@ -514,7 +526,9 @@ private fun TopicBatchDialog(onGenerate: (topic: String, count: Int) -> Unit, on
  * single-question flow. A scan- or share-derived draft also gets an "Adjust picture" button
  * (see [ManualCropDialog]) for overriding the automatic image match/crop by hand. Each draft
  * renders either the four-option MCQ editor or a single correct-answer field, depending on
- * [DraftQuestionState.questionType]. */
+ * [DraftQuestionState.questionType], and shows a small warning when
+ * [DraftQuestionState.isLikelyDuplicate] flagged it as close to an existing question — the
+ * parent can still keep it (it's a hint, not a block); see QuestionAiGenerator/QuestionSimilarity. */
 @Composable
 private fun QuestionBatchReviewContent(
     drafts: List<DraftQuestionState>,
@@ -559,6 +573,15 @@ private fun QuestionBatchReviewContent(
                                 IconButton(onClick = { onRemove(index) }) {
                                     Icon(Icons.Default.Delete, contentDescription = "Remove this draft")
                                 }
+                            }
+                            if (draft.isLikelyDuplicate) {
+                                Text(
+                                    "This looks similar to a question already in this curriculum's bank " +
+                                        "— check it isn't a repeat before saving.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                                Spacer(Modifier.height(4.dp))
                             }
                             // The scanned/shared page photo(s) this question was drafted from,
                             // if any — lets the parent see exactly what a vaguely-worded AI

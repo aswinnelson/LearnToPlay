@@ -29,6 +29,14 @@ import java.io.File
  *    understood the concept rather than just letting them re-answer something they may have
  *    already seen the answer to. Also mixes in one fill-in-the-blank question.
  *
+ * Both batch entry points also take the curriculum's already-saved question prompts
+ * ([generateBatchFromTopic]'s and [generateComprehensionQuestionsFromScan]'s `existingPrompts`)
+ * and use them two ways: as a "don't repeat these" note in the prompt itself, and to flag each
+ * returned [DraftQuestion.isLikelyDuplicate] against both the existing bank and earlier drafts
+ * in the same batch (see [QuestionSimilarity]) — easy to hit in practice when the same page gets
+ * scanned twice, or "From Topic" is run again on a subject already covered. A flagged draft is
+ * never dropped automatically; it's just marked for the parent to notice in review.
+ *
  * The model file (500MB+) is never bundled in the APK or downloaded automatically; it's pushed
  * once via `adb push` to a fixed path and loaded from there. If it isn't present yet, every
  * entry point fails with the same clear, actionable message rather than crashing.
@@ -80,6 +88,12 @@ object QuestionAiGenerator {
      * share rather than blowing the total budget. */
     private const val MAX_SCAN_CHARS_TOTAL = 3000
 
+    /** Cap on how many of the curriculum's already-saved question prompts get listed in the
+     * "don't repeat these" prompt note (see [buildAvoidDuplicatesNote]) — a bank can grow past
+     * what's worth spending prompt budget on, and the most recently added ones are the most
+     * likely to overlap with whatever the parent is generating right now anyway. */
+    private const val MAX_EXISTING_PROMPTS_LISTED = 20
+
     /** Minimum number of [significantTokens] a scanned page's region (see
      * [clusterBlocksIntoRegions]) must share with a generated question before
      * [matchAndCropRegion] trusts it enough to crop that region — below this, the shared
@@ -125,7 +139,10 @@ object QuestionAiGenerator {
      * [imagePaths] currently shows; ManageQuestionsScreen's manual "Adjust picture" flow
      * re-crops from these, never from an already-cropped image, so fixing a bad auto-crop never
      * loses detail by cropping a crop. Also empty for a "From Topic" or manually-typed
-     * question. */
+     * question. [isLikelyDuplicate] is true when [QuestionSimilarity] thinks this question is
+     * close enough to one already in the curriculum's bank (or an earlier draft in this same
+     * batch) to be worth a second look — never used to drop a draft automatically, only to flag
+     * it for the parent. */
     data class DraftQuestion(
         val prompt: String,
         val options: List<String> = emptyList(),
@@ -133,7 +150,8 @@ object QuestionAiGenerator {
         val imagePaths: List<String> = emptyList(),
         val sourcePageImages: List<String> = emptyList(),
         val questionType: String = QuestionType.MCQ,
-        val correctAnswerText: String? = null
+        val correctAnswerText: String? = null,
+        val isLikelyDuplicate: Boolean = false
     )
 
     sealed interface Result {
@@ -173,8 +191,16 @@ object QuestionAiGenerator {
      * "Class 5 Science — Photosynthesis" — for the parent to review and selectively save in one
      * pass instead of drafting one question at a time. [count]-1 are multiple-choice and
      * exactly 1 is fill-in-the-blank (all fill-in when [count] is 1), so every batch contributes
-     * at least one question a child can't pass by lucky guessing. */
-    suspend fun generateBatchFromTopic(context: Context, topic: String, count: Int): BatchResult =
+     * at least one question a child can't pass by lucky guessing. [existingPrompts] — the
+     * curriculum's already-saved question texts — is used both to steer the model away from
+     * repeating them and to flag any draft that ends up looking like one anyway (or a repeat of
+     * an earlier draft in this same batch); see [DraftQuestion.isLikelyDuplicate]. */
+    suspend fun generateBatchFromTopic(
+        context: Context,
+        topic: String,
+        count: Int,
+        existingPrompts: List<String> = emptyList()
+    ): BatchResult =
         withContext(Dispatchers.IO) {
             if (topic.isBlank()) {
                 return@withContext BatchResult.Unavailable("Type a topic or chapter first.")
@@ -183,7 +209,7 @@ object QuestionAiGenerator {
                 ?: return@withContext BatchResult.Unavailable(MODEL_MISSING_MESSAGE)
             try {
                 val askedFor = count.coerceIn(1, 10)
-                val response = llm.generateResponse(buildBatchPrompt(topic, askedFor))
+                val response = llm.generateResponse(buildBatchPrompt(topic, askedFor, existingPrompts))
                 Log.d(TAG, "generateBatchFromTopic raw response (${response.length} chars): $response")
                 // The model sometimes writes more (or fewer) questions than asked for — cap
                 // each kind separately so the guaranteed fill-in question never gets crowded out
@@ -191,7 +217,7 @@ object QuestionAiGenerator {
                 val mcqTarget = (askedFor - 1).coerceAtLeast(0)
                 val mcq = (parseBatchResponse(response) ?: emptyList()).take(mcqTarget)
                 val fillIn = parseFillInBlocks(response).take(1)
-                val parsed = mcq + fillIn
+                val parsed = flagDuplicates(mcq + fillIn, existingPrompts)
                 if (parsed.isEmpty()) {
                     BatchResult.Unavailable(
                         "The AI's answer didn't come back in a format I could read. Try again " +
@@ -217,25 +243,28 @@ object QuestionAiGenerator {
      * fill-in when [count] is 1), same guaranteed-no-luck mix as [generateBatchFromTopic].
      * [count] defaults to [defaultScanQuestionCount], which scales up a little with how many
      * pages were scanned rather than asking for the same fixed count regardless of how much
-     * material was actually covered. Returns [BatchResult.Unavailable] (rather than throwing)
-     * when the model isn't installed, so the caller can fall back to the original manual-entry
-     * flow instead of breaking scanning entirely. [imagePaths] (the persisted photo(s) for this
-     * scan session, if any — see PhotoScanCapture) becomes every draft's
-     * [DraftQuestion.sourcePageImages] unconditionally, and is also the fallback
-     * [DraftQuestion.imagePaths] for a question when nothing better can be found; [blocks] (that
-     * session's OCR'd text blocks with position, also from PhotoScanCapture) lets
-     * [matchAndCropRegion] try to narrow that down to just the part of the page a given question
-     * is actually about — see its doc for how. Either way, the parent/child ends up seeing a
-     * picture of the actual scanned material alongside what might otherwise be a vaguely-worded
-     * question, and the parent can always override the auto-match by hand (ManageQuestionsScreen's
-     * "Adjust picture") since [DraftQuestion.sourcePageImages] is always the original, uncropped
-     * photo(s) regardless of what got auto-selected. */
+     * material was actually covered. [existingPrompts] works exactly as in
+     * [generateBatchFromTopic] — steers the model away from repeating the curriculum's existing
+     * questions and flags any draft that looks like a repeat anyway. Returns
+     * [BatchResult.Unavailable] (rather than throwing) when the model isn't installed, so the
+     * caller can fall back to the original manual-entry flow instead of breaking scanning
+     * entirely. [imagePaths] (the persisted photo(s) for this scan session, if any — see
+     * PhotoScanCapture) becomes every draft's [DraftQuestion.sourcePageImages] unconditionally,
+     * and is also the fallback [DraftQuestion.imagePaths] for a question when nothing better can
+     * be found; [blocks] (that session's OCR'd text blocks with position, also from
+     * PhotoScanCapture) lets [matchAndCropRegion] try to narrow that down to just the part of
+     * the page a given question is actually about — see its doc for how. Either way, the
+     * parent/child ends up seeing a picture of the actual scanned material alongside what might
+     * otherwise be a vaguely-worded question, and the parent can always override the auto-match
+     * by hand (ManageQuestionsScreen's "Adjust picture") since [DraftQuestion.sourcePageImages]
+     * is always the original, uncropped photo(s) regardless of what got auto-selected. */
     suspend fun generateComprehensionQuestionsFromScan(
         context: Context,
         scannedPages: List<String>,
         imagePaths: List<String> = emptyList(),
         blocks: List<ScannedTextBlock> = emptyList(),
-        count: Int = defaultScanQuestionCount(scannedPages.size)
+        count: Int = defaultScanQuestionCount(scannedPages.size),
+        existingPrompts: List<String> = emptyList()
     ): BatchResult =
         withContext(Dispatchers.IO) {
             val pages = scannedPages.map { it.trim() }.filter { it.isNotBlank() }
@@ -246,7 +275,7 @@ object QuestionAiGenerator {
                 ?: return@withContext BatchResult.Unavailable(MODEL_MISSING_MESSAGE)
             try {
                 val askedFor = count.coerceIn(1, 10)
-                val response = llm.generateResponse(buildComprehensionPrompt(pages, askedFor))
+                val response = llm.generateResponse(buildComprehensionPrompt(pages, askedFor, existingPrompts))
                 Log.d(TAG, "generateComprehensionQuestionsFromScan raw response " +
                     "(${response.length} chars, ${pages.size} page(s)): $response")
                 // The model sometimes writes more (or fewer) questions than asked for — cap
@@ -263,7 +292,7 @@ object QuestionAiGenerator {
                 val mcqTarget = (askedFor - 1).coerceAtLeast(0)
                 val mcq = (parseBatchResponse(response) ?: emptyList()).take(mcqTarget)
                 val fillIn = parseFillInBlocks(response).take(1)
-                val combined = mcq + fillIn
+                val combined = flagDuplicates(mcq + fillIn, existingPrompts)
                 val parsed = if (combined.isEmpty()) null else combined.map { draft ->
                     val croppedPath = matchAndCropRegion(context, draft, blocks)
                     draft.copy(
@@ -283,6 +312,23 @@ object QuestionAiGenerator {
                 BatchResult.Unavailable("AI generation failed (${e.message ?: "unknown error"}).")
             }
         }
+
+    /** Marks each draft's [DraftQuestion.isLikelyDuplicate] against [existingPrompts] — the
+     * curriculum's already-saved questions — AND against every draft earlier in [drafts] itself,
+     * so a batch where the model accidentally wrote two versions of the same question flags the
+     * second one too. Order matters: drafts are checked against everything seen so far (existing
+     * bank first, then earlier drafts in this same call), never against drafts that come after
+     * them, so which one of a pair gets flagged is deterministic. Never removes anything — see
+     * [QuestionSimilarity]'s doc for why this only flags, never drops. */
+    private fun flagDuplicates(drafts: List<DraftQuestion>, existingPrompts: List<String>): List<DraftQuestion> {
+        if (drafts.isEmpty()) return drafts
+        val seen = existingPrompts.toMutableList()
+        return drafts.map { draft ->
+            val isDuplicate = QuestionSimilarity.isLikelyDuplicateOfAny(draft.prompt, seen)
+            seen += draft.prompt
+            draft.copy(isLikelyDuplicate = isDuplicate)
+        }
+    }
 
     /** One logical figure or section on a scanned page — a cluster of nearby OCR text blocks
      * (a title, its row labels, its numbers, ...) merged into a single region, with the union
@@ -441,16 +487,31 @@ object QuestionAiGenerator {
         Question: ${questionText.trim()}
     """.trimIndent()
 
+    /** A "don't repeat these" note listing the curriculum's most recently saved question
+     * prompts (capped at [MAX_EXISTING_PROMPTS_LISTED]), appended into both batch prompts so
+     * the model has a chance to avoid an obvious repeat before generation even happens — the
+     * post-parse [flagDuplicates] check is the backstop for whatever this doesn't catch. Empty
+     * string (nothing appended) when there's nothing to avoid yet, e.g. a brand new curriculum. */
+    private fun buildAvoidDuplicatesNote(existingPrompts: List<String>): String {
+        if (existingPrompts.isEmpty()) return ""
+        val listed = existingPrompts.takeLast(MAX_EXISTING_PROMPTS_LISTED).joinToString("\n") { "- ${it.trim()}" }
+        return "\n\nThis curriculum already has these questions saved — do NOT repeat or " +
+            "closely reword any of them; write genuinely different questions:\n$listed\n"
+    }
+
     /** Asks for [count]-1 multiple-choice blocks plus exactly 1 fill-in-the-blank block (all
      * fill-in when [count] is 1) — see [generateBatchFromTopic]'s doc for why. Two distinct,
      * clearly-labeled block formats (rather than one format with a type flag) keeps parsing
      * reliable on a small on-device model that doesn't always follow formatting instructions to
-     * the letter — see [parseBatchResponse]/[parseFillInBlocks]'s docs. */
-    private fun buildBatchPrompt(topic: String, count: Int): String {
+     * the letter — see [parseBatchResponse]/[parseFillInBlocks]'s docs. [existingPrompts] adds
+     * the "don't repeat these" note from [buildAvoidDuplicatesNote]. */
+    private fun buildBatchPrompt(topic: String, count: Int, existingPrompts: List<String> = emptyList()): String {
         val mcqCount = (count - 1).coerceAtLeast(0)
         val sb = StringBuilder()
         sb.append("You are helping a parent build a quiz for their child on this topic: \"")
-            .append(topic.trim()).append("\".\n\n")
+            .append(topic.trim()).append("\".")
+        sb.append(buildAvoidDuplicatesNote(existingPrompts))
+        sb.append("\n\n")
         if (mcqCount > 0) {
             sb.append("First, write exactly ").append(mcqCount)
                 .append(
@@ -489,8 +550,13 @@ object QuestionAiGenerator {
      * the content, which is both harder for a child to answer meaningfully and rarely has a
      * single unambiguous correct option among the four choices. Also asks for [count]-1 MCQ
      * blocks plus exactly 1 fill-in-the-blank block, same guaranteed-no-luck mix as
-     * [buildBatchPrompt]. */
-    private fun buildComprehensionPrompt(scannedPages: List<String>, count: Int): String {
+     * [buildBatchPrompt], and the same [existingPrompts] "don't repeat these" note via
+     * [buildAvoidDuplicatesNote]. */
+    private fun buildComprehensionPrompt(
+        scannedPages: List<String>,
+        count: Int,
+        existingPrompts: List<String> = emptyList()
+    ): String {
         val perPageBudget = (MAX_SCAN_CHARS_TOTAL / scannedPages.size).coerceAtLeast(300)
         val multiPage = scannedPages.size > 1
         val pagesBlock = scannedPages.mapIndexed { index, page ->
@@ -509,8 +575,10 @@ object QuestionAiGenerator {
                 "could be a textbook page, class notes, or a worksheet. Ignore anything that " +
                 "isn't part of the actual lesson content (headings, page numbers, printed " +
                 "instructions like \"Answer the following\"). Based on the concepts, facts, " +
-                "and ideas covered in $materialReference:\n\n"
+                "and ideas covered in $materialReference:"
         )
+        sb.append(buildAvoidDuplicatesNote(existingPrompts))
+        sb.append("\n\n")
         if (mcqCount > 0) {
             sb.append(
                 "First, write exactly $mcqCount NEW multiple-choice questions that check " +
