@@ -366,9 +366,14 @@ private fun ScanPageChoiceDialog(
 
 /** One AI-drafted question's editable fields, backed by Compose state so the review list below
  * can be edited in place before saving — mirrors [QuestionEntity]'s fields minus the ones that
- * only make sense for an already-saved question (id, ask stats). */
+ * only make sense for an already-saved question (id, ask stats). [imagePaths] is mutable (not a
+ * plain `val`) so the "Adjust picture" flow (see [ManualCropDialog]) can replace it in place —
+ * [sourcePageImages] stays fixed at whatever the scan session originally produced, so a manual
+ * re-crop always starts from the original full-resolution photo(s), never from an already
+ * auto-cropped image. */
 private class DraftQuestionState(seed: QuestionAiGenerator.DraftQuestion) {
-    val imagePaths: List<String> = seed.imagePaths
+    val sourcePageImages: List<String> = seed.sourcePageImages
+    var imagePaths by mutableStateOf(seed.imagePaths)
     var prompt by mutableStateOf(seed.prompt)
     var optionA by mutableStateOf(seed.options.getOrElse(0) { "" })
     var optionB by mutableStateOf(seed.options.getOrElse(1) { "" })
@@ -429,7 +434,9 @@ private fun TopicBatchDialog(onGenerate: (topic: String, count: Int) -> Unit, on
 /** Full-screen review step shown after a batch of AI-drafted questions comes back — from
  * "From Topic" or from scanning one or more photos. Every field stays editable, any draft can be
  * dropped individually, and nothing reaches the question bank until "Save All" — same "AI
- * drafts, parent decides" contract as the single-question flow. */
+ * drafts, parent decides" contract as the single-question flow. A scan-derived draft also gets
+ * an "Adjust picture" button (see [ManualCropDialog]) for overriding the automatic image
+ * match/crop by hand. */
 @Composable
 private fun QuestionBatchReviewContent(
     drafts: List<DraftQuestionState>,
@@ -437,6 +444,11 @@ private fun QuestionBatchReviewContent(
     onDiscardAll: () -> Unit,
     onSaveAll: () -> Unit
 ) {
+    // Index into `drafts` currently being adjusted in the crop dialog, or null when it's
+    // closed. A single shared dialog instance (rather than one per row) keeps only one crop
+    // in flight at a time, which is the only sane way to use it anyway.
+    var cropDialogIndex by remember { mutableStateOf<Int?>(null) }
+
     Column(Modifier.fillMaxSize().padding(24.dp)) {
         Text("Review Generated Questions", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(4.dp))
@@ -475,6 +487,14 @@ private fun QuestionBatchReviewContent(
                                     modifier = Modifier.fillMaxWidth().height(140.dp).padding(bottom = 6.dp)
                                 )
                             }
+                            // Only a scan-derived draft has a source page to re-crop from — a
+                            // "From Topic" or manually-typed draft has nothing to adjust.
+                            if (draft.sourcePageImages.isNotEmpty()) {
+                                TextButton(
+                                    onClick = { cropDialogIndex = index },
+                                    modifier = Modifier.align(Alignment.Start)
+                                ) { Text("Adjust picture") }
+                            }
                             OutlinedTextField(
                                 value = draft.prompt,
                                 onValueChange = { draft.prompt = it },
@@ -499,6 +519,22 @@ private fun QuestionBatchReviewContent(
             Button(onClick = onSaveAll, enabled = drafts.isNotEmpty(), modifier = Modifier.weight(1f)) {
                 Text("Save All (${drafts.size})")
             }
+        }
+    }
+
+    cropDialogIndex?.let { index ->
+        val draft = drafts.getOrNull(index)
+        if (draft == null) {
+            // The draft it pointed at was removed (onRemove) while the dialog was open —
+            // just close it rather than crashing on a stale index.
+            cropDialogIndex = null
+        } else {
+            ManualCropDialog(
+                pageImages = draft.sourcePageImages,
+                onCropped = { path -> draft.imagePaths = listOf(path); cropDialogIndex = null },
+                onUseFullPage = { draft.imagePaths = draft.sourcePageImages; cropDialogIndex = null },
+                onDismiss = { cropDialogIndex = null }
+            )
         }
     }
 }

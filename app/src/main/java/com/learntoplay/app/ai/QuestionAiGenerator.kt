@@ -77,9 +77,10 @@ object QuestionAiGenerator {
      * share rather than blowing the total budget. */
     private const val MAX_SCAN_CHARS_TOTAL = 3000
 
-    /** Minimum number of [significantTokens] a scanned page's OCR block must share with a
-     * generated question before [matchAndCropRegion] trusts it enough to crop that region —
-     * below this, the shared word(s) are treated as coincidental rather than a real topic match. */
+    /** Minimum number of [significantTokens] a scanned page's region (see
+     * [clusterBlocksIntoRegions]) must share with a generated question before
+     * [matchAndCropRegion] trusts it enough to crop that region — below this, the shared
+     * word(s) are treated as coincidental rather than a real topic match. */
     private const val MIN_MATCH_TOKENS = 1
 
     /** Words common enough to show up in almost any question regardless of topic — excluded from
@@ -92,18 +93,40 @@ object QuestionAiGenerator {
         "correct", "answer", "option", "options", "question", "true", "false", "not"
     )
 
+    /** How far apart (as a fraction of each OCR block's own height/width) two blocks on the
+     * same page can be and still get merged into one [ScannedRegion] by
+     * [clusterBlocksIntoRegions] — see that function's doc for why merging matters at all.
+     * Vertical padding is generous relative to horizontal: a pictograph table's rows (title,
+     * then one row per item) are usually stacked vertically with more gap between them than a
+     * label sits from its own number beside it, so the two axes need different tolerances. */
+    private const val REGION_PAD_VERTICAL_FACTOR = 0.9
+    private const val REGION_PAD_HORIZONTAL_FACTOR = 0.5
+
+    /** Floor on the per-block padding [clusterBlocksIntoRegions] uses, in pixels — a tiny OCR
+     * block (e.g. a single short number) would otherwise get almost no padding at all under the
+     * proportional formula above, making it too easy to end up isolated from the row/label it
+     * visually belongs with. */
+    private const val REGION_PAD_MIN_PX = 24
+
     @Volatile
     private var inference: LlmInference? = null
 
     /** One AI-drafted question with its four options and which one is correct — always shown
      * to the parent for review before anything reaches the question bank. [imagePaths] carries
-     * the scanned page photo(s) (if any) this question was drafted from — see
-     * QuestionEntity.imagePaths — and is empty for a "From Topic" or manually-typed question. */
+     * the picture(s) currently attached to this question — the auto-matched crop if
+     * [matchAndCropRegion] found one, otherwise every scanned page (the previous, whole-page
+     * behavior) — and is empty for a "From Topic" or manually-typed question. [sourcePageImages]
+     * is the scan session's original, full-resolution page photo(s) this question came from,
+     * regardless of what [imagePaths] currently shows; ManageQuestionsScreen's manual "Adjust
+     * picture" flow re-crops from these, never from an already-cropped image, so fixing a bad
+     * auto-crop never loses detail by cropping a crop. Also empty for a "From Topic" or
+     * manually-typed question. */
     data class DraftQuestion(
         val prompt: String,
         val options: List<String>,
         val correctIndex: Int,
-        val imagePaths: List<String> = emptyList()
+        val imagePaths: List<String> = emptyList(),
+        val sourcePageImages: List<String> = emptyList()
     )
 
     sealed interface Result {
@@ -183,12 +206,16 @@ object QuestionAiGenerator {
      * regardless of how much material was actually covered. Returns [BatchResult.Unavailable]
      * (rather than throwing) when the model isn't installed, so the caller can fall back to the
      * original manual-entry flow instead of breaking scanning entirely. [imagePaths] (the
-     * persisted photo(s) for this scan session, if any — see PhotoScanCapture) is the fallback
-     * image for a question when nothing better can be found; [blocks] (that session's OCR'd text
-     * blocks with position, also from PhotoScanCapture) lets [matchAndCropRegion] try to narrow
-     * that down to just the part of the page a given question is actually about — see its doc
-     * for how. Either way, the parent/child ends up seeing a picture of the actual scanned
-     * material alongside what might otherwise be a vaguely-worded question. */
+     * persisted photo(s) for this scan session, if any — see PhotoScanCapture) becomes every
+     * draft's [DraftQuestion.sourcePageImages] unconditionally, and is also the fallback
+     * [DraftQuestion.imagePaths] for a question when nothing better can be found; [blocks] (that
+     * session's OCR'd text blocks with position, also from PhotoScanCapture) lets
+     * [matchAndCropRegion] try to narrow that down to just the part of the page a given question
+     * is actually about — see its doc for how. Either way, the parent/child ends up seeing a
+     * picture of the actual scanned material alongside what might otherwise be a vaguely-worded
+     * question, and the parent can always override the auto-match by hand (ManageQuestionsScreen's
+     * "Adjust picture") since [DraftQuestion.sourcePageImages] is always the original, uncropped
+     * photo(s) regardless of what got auto-selected. */
     suspend fun generateComprehensionQuestionsFromScan(
         context: Context,
         scannedPages: List<String>,
@@ -210,16 +237,21 @@ object QuestionAiGenerator {
                     "(${response.length} chars, ${pages.size} page(s)): $response")
                 // The model sometimes writes more (or fewer) questions than asked for — cap to
                 // what the parent actually requested rather than dumping every extra one on
-                // them in the review screen. For each question, try to find the one OCR block
-                // on the page(s) its wording actually matches (e.g. the specific pictograph it's
+                // them in the review screen. For each question, try to find the region of the
+                // page(s) its wording actually matches (e.g. the specific pictograph it's
                 // asking about on a page with several) and crop just that region — a scanned
                 // page can cover more than one question's worth of content, and showing every
                 // question the entire page is otherwise both less useful and more cluttered than
                 // showing just the relevant part. Falls back to every page photo, unmatched
-                // (the previous behavior), when no confident match is found for a question.
+                // (the previous behavior), when no confident match is found for a question —
+                // and every draft keeps the original page(s) as sourcePageImages regardless, so
+                // a bad auto-crop is never unrecoverable.
                 val parsed = parseBatchResponse(response)?.take(askedFor)?.map { draft ->
                     val croppedPath = matchAndCropRegion(context, draft, blocks)
-                    draft.copy(imagePaths = if (croppedPath != null) listOf(croppedPath) else imagePaths)
+                    draft.copy(
+                        imagePaths = if (croppedPath != null) listOf(croppedPath) else imagePaths,
+                        sourcePageImages = imagePaths
+                    )
                 }
                 if (parsed.isNullOrEmpty()) {
                     BatchResult.Unavailable(
@@ -234,18 +266,91 @@ object QuestionAiGenerator {
             }
         }
 
-    /** Word-overlap heuristic for guessing which OCR'd block of a scanned page (if any) a
-     * generated [draft] question is actually about — e.g. picking out just the "storybooks"
-     * pictograph's block on a page with several, rather than always falling back to the whole
-     * page. Scores every block by how many [significantTokens] it shares with the question's
-     * prompt + options, keeps the best-scoring one, and requires at least [MIN_MATCH_TOKENS]
-     * shared words before trusting the guess enough to crop — one incidental shared word isn't
-     * strong enough signal, and cropping the wrong part of the page would be worse than just
-     * showing the whole thing. On a confident match, crops that block's region (plus padding,
-     * to catch nearby icons/labels the OCR split into separate blocks) via [cropAndSaveRegion]
-     * and returns the new file's path; returns null (not a hard failure) whenever there's
-     * nothing to match against, no confident match, or the crop itself fails, so the caller can
-     * fall back to the full page image(s) instead. */
+    /** One logical figure or section on a scanned page — a cluster of nearby OCR text blocks
+     * (a title, its row labels, its numbers, ...) merged into a single region, with the union
+     * of their bounding boxes and their combined text. See [clusterBlocksIntoRegions]. */
+    private data class ScannedRegion(
+        val imagePath: String,
+        val left: Int,
+        val top: Int,
+        val right: Int,
+        val bottom: Int,
+        val text: String
+    )
+
+    /** Groups a page's OCR text blocks into logical regions before [matchAndCropRegion] scores
+     * them, rather than matching single blocks directly. ML Kit splits a page into many small
+     * blocks — a pictograph table's title, its row labels, and its counts typically all land in
+     * separate blocks even though they're one visual figure a question is about — so matching
+     * single blocks either missed most of a figure's words (weak, unreliable scores) or cropped
+     * just one line of it (the title, with no numbers). This merges blocks whose padded
+     * bounding boxes overlap into one region via a union-find over every pair of blocks on the
+     * same page — cheap here since a page realistically has a few dozen OCR blocks, never
+     * thousands. Each block's padding is proportional to its own size (see
+     * [REGION_PAD_VERTICAL_FACTOR]/[REGION_PAD_HORIZONTAL_FACTOR]) rather than a fixed pixel
+     * amount, since photos of different pages can be scanned at very different resolutions.
+     * Only blocks from the same page (same [ScannedTextBlock.imagePath]) are ever merged. */
+    private fun clusterBlocksIntoRegions(blocks: List<ScannedTextBlock>): List<ScannedRegion> {
+        val regions = mutableListOf<ScannedRegion>()
+        for ((imagePath, pageBlocks) in blocks.groupBy { it.imagePath }) {
+            val parent = IntArray(pageBlocks.size) { it }
+            fun find(x: Int): Int {
+                var r = x
+                while (parent[r] != r) r = parent[r]
+                parent[x] = r
+                return r
+            }
+            fun union(a: Int, b: Int) {
+                val ra = find(a)
+                val rb = find(b)
+                if (ra != rb) parent[ra] = rb
+            }
+            fun padded(b: ScannedTextBlock): IntArray {
+                val h = (b.bottom - b.top).coerceAtLeast(1)
+                val w = (b.right - b.left).coerceAtLeast(1)
+                val padY = (h * REGION_PAD_VERTICAL_FACTOR).toInt().coerceAtLeast(REGION_PAD_MIN_PX)
+                val padX = (w * REGION_PAD_HORIZONTAL_FACTOR).toInt().coerceAtLeast(REGION_PAD_MIN_PX)
+                return intArrayOf(b.left - padX, b.top - padY, b.right + padX, b.bottom + padY)
+            }
+
+            for (i in pageBlocks.indices) {
+                val a = padded(pageBlocks[i])
+                for (j in i + 1 until pageBlocks.size) {
+                    val c = padded(pageBlocks[j])
+                    val overlaps = a[0] < c[2] && c[0] < a[2] && a[1] < c[3] && c[1] < a[3]
+                    if (overlaps) union(i, j)
+                }
+            }
+
+            pageBlocks.indices.groupBy { find(it) }.values.forEach { memberIndices ->
+                val members = memberIndices.map { pageBlocks[it] }
+                regions += ScannedRegion(
+                    imagePath = imagePath,
+                    left = members.minOf { it.left },
+                    top = members.minOf { it.top },
+                    right = members.maxOf { it.right },
+                    bottom = members.maxOf { it.bottom },
+                    text = members.joinToString(" ") { it.text }
+                )
+            }
+        }
+        return regions
+    }
+
+    /** Word-overlap heuristic for guessing which part of a scanned page (if any) a generated
+     * [draft] question is actually about — e.g. picking out just the "storybooks" pictograph on
+     * a page with several, rather than always falling back to the whole page. Matches against
+     * whole [ScannedRegion]s (clusters of nearby OCR blocks — see [clusterBlocksIntoRegions]),
+     * not individual blocks, so the matched area actually covers a whole figure rather than one
+     * line of it. Scores every region by how many [significantTokens] it shares with the
+     * question's prompt + options, keeps the best-scoring one, and requires at least
+     * [MIN_MATCH_TOKENS] shared words before trusting the guess enough to crop — one incidental
+     * shared word isn't strong enough signal, and cropping the wrong part of the page would be
+     * worse than just showing the whole thing. On a confident match, crops that region (plus
+     * padding, via [cropAndSaveRegion]) and returns the new file's path; returns null (not a
+     * hard failure) whenever there's nothing to match against, no confident match, or the crop
+     * itself fails, so the caller can fall back to the full page image(s) instead — and the
+     * parent can always override this by hand afterward (see [DraftQuestion.sourcePageImages]). */
     private fun matchAndCropRegion(
         context: Context,
         draft: DraftQuestion,
@@ -255,23 +360,24 @@ object QuestionAiGenerator {
         val questionTokens = significantTokens(draft.prompt + " " + draft.options.joinToString(" "))
         if (questionTokens.isEmpty()) return null
 
-        var bestBlock: ScannedTextBlock? = null
+        val regions = clusterBlocksIntoRegions(blocks)
+        var bestRegion: ScannedRegion? = null
         var bestScore = 0
-        for (block in blocks) {
-            val score = questionTokens.intersect(significantTokens(block.text)).size
+        for (region in regions) {
+            val score = questionTokens.intersect(significantTokens(region.text)).size
             if (score > bestScore) {
                 bestScore = score
-                bestBlock = block
+                bestRegion = region
             }
         }
-        val block = bestBlock ?: return null
+        val region = bestRegion ?: return null
         if (bestScore < MIN_MATCH_TOKENS) return null
 
-        return cropAndSaveRegion(context, block.imagePath, block.left, block.top, block.right, block.bottom)
+        return cropAndSaveRegion(context, region.imagePath, region.left, region.top, region.right, region.bottom)
     }
 
     /** Lowercased alphanumeric words longer than 2 characters, minus [MATCH_STOPWORDS] — the
-     * vocabulary [matchAndCropRegion] scores blocks against. Short/common words (articles,
+     * vocabulary [matchAndCropRegion] scores regions against. Short/common words (articles,
      * question words like "how"/"what", generic terms like "show"/"many") appear in nearly every
      * question regardless of topic and would otherwise match everything on the page equally,
      * defeating the point of scoring at all. */

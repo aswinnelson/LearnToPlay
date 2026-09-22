@@ -57,12 +57,13 @@ fun ScannedImage(
 /**
  * Crops the region [left]/[top]/[right]/[bottom] — full-resolution pixel coordinates in
  * [imagePath]'s own EXIF-corrected orientation, e.g. straight from an ML Kit OCR block's
- * bounding box (computed in that same corrected space) — out of the photo at [imagePath], pads
- * it by [paddingPx] on every side (clamped to the photo's bounds, so a region near an edge just
- * gets less padding rather than failing), and saves the crop as a new JPEG alongside the source
- * photo. Returns the new file's path, or null on any failure (missing/corrupt source, decode
- * error, disk error) — callers should fall back to showing the full page rather than fail
- * outright over a crop that didn't work out.
+ * bounding box (computed in that same corrected space), or from [orientedImageDimensions]-based
+ * math in a manual crop UI — out of the photo at [imagePath], pads it by [paddingPx] on every
+ * side (clamped to the photo's bounds, so a region near an edge just gets less padding rather
+ * than failing), and saves the crop as a new JPEG alongside the source photo. Returns the new
+ * file's path, or null on any failure (missing/corrupt source, decode error, disk error) —
+ * callers should fall back to showing the full page rather than fail outright over a crop that
+ * didn't work out.
  */
 fun cropAndSaveRegion(
     context: Context,
@@ -74,10 +75,10 @@ fun cropAndSaveRegion(
     paddingPx: Int = 120
 ): String? = runCatching {
     // Capped well above display's 1024px so the crop keeps good detail, but still bounded —
-    // this decode is short-lived (happens once right after generation; the full bitmap isn't
-    // held in any UI state afterward), so a higher ceiling here is fine without reintroducing
-    // the "decode a 12+ megapixel camera photo uncapped" memory problem this file otherwise
-    // avoids.
+    // this decode is short-lived (happens once right after generation, or once per manual
+    // adjustment; the full bitmap isn't held in any UI state afterward), so a higher ceiling
+    // here is fine without reintroducing the "decode a 12+ megapixel camera photo uncapped"
+    // memory problem this file otherwise avoids.
     val (bitmap, sampleSize) = decodeOrientedBitmap(imagePath, maxDimensionPx = 2200) ?: return null
     val l = ((left - paddingPx) / sampleSize).coerceIn(0, bitmap.width - 1)
     val t = ((top - paddingPx) / sampleSize).coerceIn(0, bitmap.height - 1)
@@ -89,6 +90,34 @@ fun cropAndSaveRegion(
     FileOutputStream(dest).use { out -> cropped.compress(Bitmap.CompressFormat.JPEG, 90, out) }
     dest.absolutePath
 }.getOrNull()
+
+/**
+ * Returns [imagePath]'s width and height, in its own EXIF-corrected orientation, without
+ * decoding any pixel data — just the bounds, plus the same EXIF orientation read in
+ * [decodeOrientedBitmap]. A 90°/270° rotation swaps what [BitmapFactory] itself reports as
+ * width/height, so this swaps them back to match the coordinate space [cropAndSaveRegion] and
+ * ML Kit's OCR bounding boxes both operate in.
+ *
+ * Used by the manual "Adjust picture" crop UI (see ManualCropDialog) to translate an on-screen
+ * selection — a fraction of the displayed image — into the full-resolution pixel coordinates
+ * [cropAndSaveRegion] expects, without paying for a full bitmap decode just to find that out.
+ * Returns null for a missing/corrupt file.
+ */
+fun orientedImageDimensions(path: String): Pair<Int, Int>? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    val orientation = runCatching {
+        ExifInterface(path).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+    }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+    return when (orientation) {
+        ExifInterface.ORIENTATION_ROTATE_90,
+        ExifInterface.ORIENTATION_ROTATE_270,
+        ExifInterface.ORIENTATION_TRANSPOSE,
+        ExifInterface.ORIENTATION_TRANSVERSE -> bounds.outHeight to bounds.outWidth
+        else -> bounds.outWidth to bounds.outHeight
+    }
+}
 
 /**
  * Decodes [path] downsampled so neither dimension exceeds [maxDimensionPx] — halving resolution
