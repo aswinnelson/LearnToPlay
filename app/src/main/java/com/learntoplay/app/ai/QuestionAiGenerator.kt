@@ -501,7 +501,8 @@ object QuestionAiGenerator {
         if (options.size != 4 || correctLetter == null) return null
         val correctIndex = "ABCD".indexOf(correctLetter)
         if (correctIndex !in 0..3) return null
-        return Result.Success(options, correctIndex)
+        val (shuffledOptions, shuffledCorrectIndex) = shuffledWithCorrectIndex(options, correctIndex)
+        return Result.Success(shuffledOptions, shuffledCorrectIndex)
     }
 
     /** Parses one or more "Q: ... A) ... B) ... C) ... D) ... CORRECT: X" blocks out of a
@@ -520,7 +521,10 @@ object QuestionAiGenerator {
      * captured field is expected to be plain text with no embedded newline, and keeping "."
      * confined to a single line is what stops a block with a malformed CORRECT value (see
      * above) from backtracking across the "---" separator and bleeding into the next block —
-     * the field separators still cross line breaks fine since \s already matches newlines. */
+     * the field separators still cross line breaks fine since \s already matches newlines.
+     *
+     * Each parsed block's options are shuffled via [shuffledWithCorrectIndex] before becoming a
+     * [DraftQuestion] — see that function's doc for why. */
     private fun parseBatchResponse(text: String): List<DraftQuestion>? {
         val blockRegex = Regex(
             """Q:\s*(.+?)\s*,?\s*A\)\s*(.+?)\s*,?\s*B\)\s*(.+?)\s*,?\s*C\)\s*(.+?)\s*,?\s*D\)\s*(.+?)\s*,?\s*CORRECT:\s*([ABCD])\b""",
@@ -534,13 +538,34 @@ object QuestionAiGenerator {
             if (correctIndex !in 0..3 || g[1].isBlank()) {
                 null
             } else {
-                DraftQuestion(
-                    cleanField(g[1]),
-                    listOf(cleanField(g[2]), cleanField(g[3]), cleanField(g[4]), cleanField(g[5])),
-                    correctIndex
-                )
+                val options = listOf(cleanField(g[2]), cleanField(g[3]), cleanField(g[4]), cleanField(g[5]))
+                val (shuffledOptions, shuffledCorrectIndex) = shuffledWithCorrectIndex(options, correctIndex)
+                DraftQuestion(cleanField(g[1]), shuffledOptions, shuffledCorrectIndex)
             }
         }
+    }
+
+    /** Randomizes the order of a question's four options, returning the new order and where
+     * the correct answer ended up. Needed because the on-device model reliably writes its
+     * *correct* option in a predictable slot far more often than chance would — most commonly
+     * option A — since that's simply the order small local models tend to reason in (state the
+     * right answer first, then invent three wrong ones). Left unshuffled, a child (or a parent
+     * skimming quickly) could learn to just always pick the first option and score well without
+     * knowing the material, which defeats the entire point of the quiz gate. Applied uniformly
+     * to every parsed question — [parseSingleResponse] and [parseBatchResponse] — right after
+     * parsing, so every downstream consumer (review screen, saved [QuestionEntity]) only ever
+     * sees already-shuffled options and never needs to think about this itself.
+     *
+     * `internal` rather than `private` purely so ScoreTimeCalculator-style direct unit tests
+     * (see QuestionAiGeneratorTest) can exercise the shuffle's invariants — that it's a true
+     * permutation of the input and that the value at the returned index is still the original
+     * correct option — without needing to drive a whole model response through regex parsing
+     * just to reach this logic. */
+    internal fun shuffledWithCorrectIndex(options: List<String>, correctIndex: Int): Pair<List<String>, Int> {
+        val order = options.indices.shuffled()
+        val shuffled = order.map { options[it] }
+        val newCorrectIndex = order.indexOf(correctIndex)
+        return shuffled to newCorrectIndex
     }
 
     /** The on-device model occasionally writes a literal two-character "\n" (backslash then n)
