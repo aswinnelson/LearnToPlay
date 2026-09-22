@@ -10,6 +10,8 @@ import com.learntoplay.app.data.repository.AdminRepository
 import com.learntoplay.app.data.repository.PinCheckResult
 import com.learntoplay.app.data.repository.QuizRepository
 import com.learntoplay.app.data.repository.TimeBankRepository
+import com.learntoplay.app.remote.AuthOutcome
+import com.learntoplay.app.remote.AuthRepository
 import com.learntoplay.app.remote.FamilySyncRepository
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
@@ -100,4 +102,23 @@ class AdminViewModel(private val db: AppDatabase, context: Context) : ViewModel(
     /** Pushes the current state to Firestore right away, e.g. right after generating a pairing
      * code for the first time, rather than waiting for the next automatic sync point. */
     fun syncNow() = viewModelScope.launch { FamilySyncRepository.pushSnapshot(appContext, db) }
+
+    // --- Parent account (see AuthRepository) — separate from the family-code pairing above
+    // and from the local PIN gate; purely "who is this parent," not "can they open Admin Mode
+    // on this device" or "which device is synced to which." ---
+
+    /** The signed-in parent's email, or null if not signed in with a real account (an
+     * anonymous-only session reads the same as no session at all). Plain synchronous read of
+     * FirebaseAuth's current state, not a Flow — the call site re-reads this itself right
+     * after a sign-up/sign-in/sign-out call resolves, same pattern DeviceSettingsScreen
+     * already uses for isDeviceOwner. */
+    fun currentParentEmail(): String? = AuthRepository.currentParentEmail()
+
+    suspend fun signUpParent(email: String, password: String): AuthOutcome =
+        AuthRepository.signUp(email, password)
+
+    suspend fun signInParent(email: String, password: String): AuthOutcome =
+        AuthRepository.signIn(email, password)
+
+    fun signOutParent() = AuthRepository.signOut()
 }
