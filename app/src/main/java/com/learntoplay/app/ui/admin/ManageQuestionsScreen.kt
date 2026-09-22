@@ -18,8 +18,10 @@ import androidx.compose.ui.unit.dp
 import com.learntoplay.app.ai.QuestionAiGenerator
 import com.learntoplay.app.data.db.entities.QuestionEntity
 import com.learntoplay.app.data.db.entities.toImagePathsColumn
+import com.learntoplay.app.util.PendingShare
 import com.learntoplay.app.util.ScannedImage
 import com.learntoplay.app.util.ScannedTextBlock
+import com.learntoplay.app.util.importSharedImage
 import com.learntoplay.app.util.rememberPhotoScanLauncher
 import kotlinx.coroutines.launch
 
@@ -33,10 +35,25 @@ private const val MAX_SCAN_PAGES = 5
  * (Stage C OCR, now paired with on-device AI that writes fresh comprehension-check questions
  * about that content rather than just copying whatever's printed on it — a parent can scan
  * several pages of the same topic before generating, and the questions cover all of them
- * together), and/or drafted from just a topic name. Every AI path lands in a review step;
- * nothing is saved to the question bank without the parent explicitly saving it. */
+ * together), started from content shared in from another app (e.g. a teacher's WhatsApp
+ * message — see [incomingShare]), and/or drafted from just a topic name. Every AI path lands in
+ * a review step; nothing is saved to the question bank without the parent explicitly saving it.
+ *
+ * [incomingShare], when non-null, is handled once on first composition (see the
+ * `remember { incomingShare }` latch below) and fed into the very same scan-session pipeline a
+ * camera photo uses — a shared WhatsApp message becomes a "page" exactly like a photographed
+ * textbook page, right down to auto-cropping a question's image out of a shared screenshot.
+ * [onIncomingShareConsumed] is called once that hand-off is done (whether it succeeded or not),
+ * so the caller (AppNavGraph) can clear its own pending-share state and this screen won't try to
+ * process the same share again on a later recomposition. */
 @Composable
-fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBack: () -> Unit) {
+fun ManageQuestionsScreen(
+    viewModel: AdminViewModel,
+    curriculumId: String,
+    incomingShare: PendingShare? = null,
+    onIncomingShareConsumed: () -> Unit = {},
+    onBack: () -> Unit
+) {
     val questions by viewModel.observeQuestionsForCurriculum(curriculumId).collectAsState(initial = emptyList())
     var editingQuestion by remember { mutableStateOf<QuestionEntity?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
@@ -51,7 +68,8 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
     // photo) but can be shorter if persisting a photo failed for one page — see
     // PhotoScanCapture.persistScanImageOrNull — so every generated question can still show
     // whichever page photos were actually saved rather than losing the whole batch over one
-    // failed copy.
+    // failed copy. A shared WhatsApp message/screenshot (see [incomingShare] below) is treated
+    // as a one-page session in exactly this same state, not a separate mechanism.
     val scannedPages = remember { mutableStateListOf<String>() }
     val scannedPageImages = remember { mutableStateListOf<String>() }
     // OCR'd text blocks with their on-page position, across every photo in the current session
@@ -85,8 +103,10 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
 
     // Ends the current scan session: takes whatever pages have been accumulated so far, clears
     // them, and runs one AI call covering all of them together. Called either when the parent
-    // taps "Generate Questions Now" in the page-choice dialog, or automatically once
-    // [MAX_SCAN_PAGES] is reached.
+    // taps "Generate Questions Now" in the page-choice dialog, automatically once
+    // [MAX_SCAN_PAGES] is reached, or immediately after a shared message/screenshot is handled
+    // (a share is always treated as "generate now," never added to a multi-page session the
+    // parent has to explicitly close out).
     fun generateFromScannedPages() {
         showPageChoiceDialog = false
         val pages = scannedPages.toList()
@@ -139,6 +159,45 @@ fun ManageQuestionsScreen(viewModel: AdminViewModel, curriculumId: String, onBac
         },
         onError = { message -> errorMessage = message }
     )
+
+    // Handles a share-sheet hand-off (a parent sharing a teacher's WhatsApp message/screenshot
+    // into LearnToPlay — see PendingShare) exactly once. `handledShare` latches the value this
+    // screen was first composed with via `remember { }` (no key — computed once, ignoring any
+    // later change to the `incomingShare` parameter itself), and the effect below is keyed on
+    // Unit for the same reason: onIncomingShareConsumed() flows back up through AppNavGraph and
+    // clears its pendingShare state, which would otherwise change this composable's
+    // `incomingShare` parameter to null mid-flight — if the effect were keyed on that parameter
+    // directly, that change would cancel an in-progress OCR/generation coroutine right out from
+    // under itself. Calling onIncomingShareConsumed() only at the very end (after handing off
+    // to generateFromScannedPages(), not before) avoids that race entirely.
+    val handledShare = remember { incomingShare }
+    LaunchedEffect(Unit) {
+        val share = handledShare
+        if (share != null) {
+            when (share) {
+                is PendingShare.Text -> {
+                    scannedPages.add(share.text)
+                    generateFromScannedPages()
+                }
+                is PendingShare.Image -> {
+                    scanBusy = true
+                    scanBusyLabel = "the shared photo"
+                    val imported = importSharedImage(context, share.uri)
+                    if (imported == null) {
+                        errorMessage = "Couldn't read that shared photo — try sharing it again, " +
+                            "or use Scan Photo instead."
+                        scanBusy = false
+                    } else {
+                        scannedPages.add(imported.text)
+                        scannedPageImages.add(imported.imagePath)
+                        scannedBlocks.addAll(imported.blocks)
+                        generateFromScannedPages()
+                    }
+                }
+            }
+            onIncomingShareConsumed()
+        }
+    }
 
     if (showBatchReview) {
         QuestionBatchReviewContent(
@@ -432,11 +491,11 @@ private fun TopicBatchDialog(onGenerate: (topic: String, count: Int) -> Unit, on
 }
 
 /** Full-screen review step shown after a batch of AI-drafted questions comes back — from
- * "From Topic" or from scanning one or more photos. Every field stays editable, any draft can be
- * dropped individually, and nothing reaches the question bank until "Save All" — same "AI
- * drafts, parent decides" contract as the single-question flow. A scan-derived draft also gets
- * an "Adjust picture" button (see [ManualCropDialog]) for overriding the automatic image
- * match/crop by hand. */
+ * "From Topic", from scanning one or more photos, or from a shared WhatsApp message/screenshot.
+ * Every field stays editable, any draft can be dropped individually, and nothing reaches the
+ * question bank until "Save All" — same "AI drafts, parent decides" contract as the
+ * single-question flow. A scan- or share-derived draft also gets an "Adjust picture" button
+ * (see [ManualCropDialog]) for overriding the automatic image match/crop by hand. */
 @Composable
 private fun QuestionBatchReviewContent(
     drafts: List<DraftQuestionState>,
@@ -478,17 +537,19 @@ private fun QuestionBatchReviewContent(
                                     Icon(Icons.Default.Delete, contentDescription = "Remove this draft")
                                 }
                             }
-                            // The scanned page photo(s) this question was drafted from, if any —
-                            // lets the parent see exactly what a vaguely-worded AI question is
-                            // actually referring to before deciding whether to save it.
+                            // The scanned/shared page photo(s) this question was drafted from,
+                            // if any — lets the parent see exactly what a vaguely-worded AI
+                            // question is actually referring to before deciding whether to save
+                            // it.
                             draft.imagePaths.forEach { path ->
                                 ScannedImage(
                                     path = path,
                                     modifier = Modifier.fillMaxWidth().height(140.dp).padding(bottom = 6.dp)
                                 )
                             }
-                            // Only a scan-derived draft has a source page to re-crop from — a
-                            // "From Topic" or manually-typed draft has nothing to adjust.
+                            // Only a scan- or share-derived draft has a source page to re-crop
+                            // from — a "From Topic" or manually-typed draft has nothing to
+                            // adjust.
                             if (draft.sourcePageImages.isNotEmpty()) {
                                 TextButton(
                                     onClick = { cropDialogIndex = index },

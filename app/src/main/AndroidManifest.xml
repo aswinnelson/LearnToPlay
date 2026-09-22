@@ -51,6 +51,21 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Lets a parent share a teacher's WhatsApp message (or any other app's text)
+                 straight into LearnToPlay's question-generation pipeline — see
+                 MainActivity.extractPendingShare and util/SharedContentImport.kt. Two separate
+                 filters (rather than one filter with two <data> mimeTypes) since text/plain and
+                 image/* really are two distinct kinds of share this app handles differently. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
         </activity>
 
         <!-- Detects foreground app changes; shows the quiz-gate overlay

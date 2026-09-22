@@ -17,6 +17,7 @@ import com.learntoplay.app.ui.child.ChildHomeScreen
 import com.learntoplay.app.ui.child.QuizScreen
 import com.learntoplay.app.ui.child.QuizViewModel
 import com.learntoplay.app.ui.remote.RemoteMonitorScreen
+import com.learntoplay.app.util.PendingShare
 
 private object Routes {
     const val CHILD_HOME = "child_home"
@@ -42,7 +43,15 @@ fun AppNavGraph(
     db: AppDatabase,
     navController: NavHostController = rememberNavController(),
     openQuizOnStart: Boolean = false,
-    onOpenQuizConsumed: () -> Unit = {}
+    onOpenQuizConsumed: () -> Unit = {},
+    // Set when MainActivity was launched via another app's share sheet (see PendingShare) —
+    // e.g. a parent sharing a teacher's WhatsApp message into LearnToPlay. Routes the parent
+    // through the PIN gate and a curriculum picker before the share ever reaches
+    // ManageQuestionsScreen, same as any other admin-only, content-adding action; consumed
+    // there (not here) once it's actually been handed off, so it survives the PIN + curriculum
+    // navigation steps in between.
+    pendingShare: PendingShare? = null,
+    onPendingShareConsumed: () -> Unit = {}
 ) {
     val appContext = LocalContext.current.applicationContext
     val adminViewModel: AdminViewModel =
@@ -58,6 +67,18 @@ fun AppNavGraph(
                 popUpTo(Routes.CHILD_HOME) { inclusive = false }
             }
             onOpenQuizConsumed()
+        }
+    }
+
+    // A share-sheet hand-off always starts the same way regardless of what's currently on
+    // screen: the parent has to authenticate first, since it's about to add content to the
+    // question bank. AdminPinScreen's onUnlocked below is what continues this to the
+    // curriculum picker rather than the normal Admin Dashboard.
+    androidx.compose.runtime.LaunchedEffect(pendingShare) {
+        if (pendingShare != null) {
+            navController.navigate(Routes.ADMIN_PIN) {
+                popUpTo(Routes.CHILD_HOME) { inclusive = false }
+            }
         }
     }
 
@@ -78,7 +99,16 @@ fun AppNavGraph(
         composable(Routes.ADMIN_PIN) {
             AdminPinScreen(
                 adminViewModel,
-                onUnlocked = { navController.navigate(Routes.ADMIN_DASHBOARD) },
+                onUnlocked = {
+                    // A pending share skips the dashboard and goes straight to picking which
+                    // curriculum it belongs to — the dashboard has nothing to do with a share
+                    // that's already in flight.
+                    if (pendingShare != null) {
+                        navController.navigate(Routes.ADMIN_CURRICULUM)
+                    } else {
+                        navController.navigate(Routes.ADMIN_DASHBOARD)
+                    }
+                },
                 onViewRemoteDevice = { navController.navigate(Routes.REMOTE_MONITOR) }
             )
         }
@@ -108,7 +138,13 @@ fun AppNavGraph(
         ) { backStackEntry ->
             val curriculumId = backStackEntry.arguments?.getString("curriculumId")
             if (curriculumId != null) {
-                ManageQuestionsScreen(adminViewModel, curriculumId) { navController.popBackStack() }
+                ManageQuestionsScreen(
+                    viewModel = adminViewModel,
+                    curriculumId = curriculumId,
+                    incomingShare = pendingShare,
+                    onIncomingShareConsumed = onPendingShareConsumed,
+                    onBack = { navController.popBackStack() }
+                )
             }
         }
         composable(Routes.ADMIN_SCORE_TIME) {
