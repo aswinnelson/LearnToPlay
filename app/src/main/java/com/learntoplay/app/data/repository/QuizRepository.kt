@@ -3,6 +3,7 @@ package com.learntoplay.app.data.repository
 import androidx.room.withTransaction
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.db.entities.QuestionEntity
+import com.learntoplay.app.data.db.entities.QuestionType
 import com.learntoplay.app.data.db.entities.QuizResultEntity
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -23,6 +24,11 @@ class QuizRepository(private val db: AppDatabase) {
      * getting buried under an established pool. Selection is still weighted-*random*, not a
      * strict worst-first ranking, so the same handful of hardest questions don't dominate
      * every single quiz.
+     *
+     * Also guarantees at least one FILL_IN (typed-answer) question when the curriculum's bank
+     * has any, so a child can't pass a quiz purely by lucky multiple-choice guessing. Falls
+     * back gracefully to an all-MCQ selection when no FILL_IN questions exist yet for this
+     * curriculum.
      */
     suspend fun getQuizQuestions(curriculumId: String, count: Int = 5): List<QuestionEntity> {
         val all = db.questionDao().getForCurriculum(curriculumId)
@@ -32,19 +38,30 @@ class QuizRepository(private val db: AppDatabase) {
         val pool = all.toMutableList()
         val picked = mutableListOf<QuestionEntity>()
 
-        repeat(count) {
-            if (pool.isEmpty()) return@repeat
-            val weights = pool.map { weightOf(it, now) }
-            val total = weights.sum()
-            var roll = Random.nextDouble() * total
-            var chosenIndex = weights.lastIndex
-            for (i in weights.indices) {
-                roll -= weights[i]
-                if (roll <= 0) { chosenIndex = i; break }
-            }
-            picked += pool.removeAt(chosenIndex)
+        val fillInPool = pool.filter { it.questionType == QuestionType.FILL_IN }.toMutableList()
+        if (fillInPool.isNotEmpty()) {
+            val guaranteed = pickWeighted(fillInPool, now)
+            picked += guaranteed
+            pool.removeAll { it.id == guaranteed.id }
         }
-        return picked
+
+        repeat(count - picked.size) {
+            if (pool.isEmpty()) return@repeat
+            picked += pickWeighted(pool, now)
+        }
+        return picked.shuffled()
+    }
+
+    private fun pickWeighted(pool: MutableList<QuestionEntity>, now: Long): QuestionEntity {
+        val weights = pool.map { weightOf(it, now) }
+        val total = weights.sum()
+        var roll = Random.nextDouble() * total
+        var chosenIndex = weights.lastIndex
+        for (i in weights.indices) {
+            roll -= weights[i]
+            if (roll <= 0) { chosenIndex = i; break }
+        }
+        return pool.removeAt(chosenIndex)
     }
 
     private fun weightOf(q: QuestionEntity, nowMillis: Long): Double {

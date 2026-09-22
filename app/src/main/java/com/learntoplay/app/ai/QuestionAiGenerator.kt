@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions
+import com.learntoplay.app.data.db.entities.QuestionType
 import com.learntoplay.app.util.ScannedTextBlock
 import com.learntoplay.app.util.cropAndSaveRegion
 import kotlinx.coroutines.Dispatchers
@@ -11,20 +12,22 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Drafts multiple-choice questions using a small language model running entirely on-device
- * (MediaPipe LLM Inference API, e.g. Gemma 3 1B) — no network call, no cloud service,
- * consistent with the app's local-first design. Three ways in:
+ * Drafts multiple-choice AND fill-in-the-blank questions using a small language model running
+ * entirely on-device (MediaPipe LLM Inference API, e.g. Gemma 3 1B) — no network call, no cloud
+ * service, consistent with the app's local-first design. Three ways in:
  *  - [generateOptions]: given one question the parent already typed/scanned, draft its four
- *    options (the original Stage-AI feature).
+ *    MCQ options (the original Stage-AI feature — MCQ only, no fill-in path here).
  *  - [generateBatchFromTopic]: given just a topic/chapter, write a whole new set of questions
- *    from scratch.
+ *    from scratch — a mix of MCQ plus exactly one fill-in-the-blank question, so every
+ *    AI-drafted batch contributes at least one question a child can't pass by guessing (see
+ *    QuizRepository.getQuizQuestions, which guarantees a quiz includes one when the bank has any).
  *  - [generateComprehensionQuestionsFromScan]: given raw OCR text from one or more photos of
  *    whatever the child is studying (a textbook page, notes, a worksheet — a parent can scan
  *    several pages of the same topic before generating), write a fresh batch of
  *    comprehension-check questions covering that material — deliberately NOT the same questions
  *    printed on the page(s) (if any), so a quiz built from it actually tests whether the child
  *    understood the concept rather than just letting them re-answer something they may have
- *    already seen the answer to.
+ *    already seen the answer to. Also mixes in one fill-in-the-blank question.
  *
  * The model file (500MB+) is never bundled in the APK or downloaded automatically; it's pushed
  * once via `adb push` to a fixed path and loaded from there. If it isn't present yet, every
@@ -111,22 +114,26 @@ object QuestionAiGenerator {
     @Volatile
     private var inference: LlmInference? = null
 
-    /** One AI-drafted question with its four options and which one is correct — always shown
-     * to the parent for review before anything reaches the question bank. [imagePaths] carries
-     * the picture(s) currently attached to this question — the auto-matched crop if
-     * [matchAndCropRegion] found one, otherwise every scanned page (the previous, whole-page
-     * behavior) — and is empty for a "From Topic" or manually-typed question. [sourcePageImages]
-     * is the scan session's original, full-resolution page photo(s) this question came from,
-     * regardless of what [imagePaths] currently shows; ManageQuestionsScreen's manual "Adjust
-     * picture" flow re-crops from these, never from an already-cropped image, so fixing a bad
-     * auto-crop never loses detail by cropping a crop. Also empty for a "From Topic" or
-     * manually-typed question. */
+    /** One AI-drafted question, either MCQ ([options]/[correctIndex] populated, [questionType]
+     * is [QuestionType.MCQ]) or fill-in-the-blank ([correctAnswerText] populated instead,
+     * [questionType] is [QuestionType.FILL_IN]) — always shown to the parent for review before
+     * anything reaches the question bank. [imagePaths] carries the picture(s) currently
+     * attached to this question — the auto-matched crop if [matchAndCropRegion] found one,
+     * otherwise every scanned page (the previous, whole-page behavior) — and is empty for a
+     * "From Topic" or manually-typed question. [sourcePageImages] is the scan session's
+     * original, full-resolution page photo(s) this question came from, regardless of what
+     * [imagePaths] currently shows; ManageQuestionsScreen's manual "Adjust picture" flow
+     * re-crops from these, never from an already-cropped image, so fixing a bad auto-crop never
+     * loses detail by cropping a crop. Also empty for a "From Topic" or manually-typed
+     * question. */
     data class DraftQuestion(
         val prompt: String,
-        val options: List<String>,
-        val correctIndex: Int,
+        val options: List<String> = emptyList(),
+        val correctIndex: Int = -1,
         val imagePaths: List<String> = emptyList(),
-        val sourcePageImages: List<String> = emptyList()
+        val sourcePageImages: List<String> = emptyList(),
+        val questionType: String = QuestionType.MCQ,
+        val correctAnswerText: String? = null
     )
 
     sealed interface Result {
@@ -162,9 +169,11 @@ object QuestionAiGenerator {
             }
         }
 
-    /** Writes a whole new set of [count] (1–10) multiple-choice questions about [topic] from
-     * scratch — e.g. "Class 5 Science — Photosynthesis" — for the parent to review and
-     * selectively save in one pass instead of drafting one question at a time. */
+    /** Writes a whole new set of [count] (1–10) questions about [topic] from scratch — e.g.
+     * "Class 5 Science — Photosynthesis" — for the parent to review and selectively save in one
+     * pass instead of drafting one question at a time. [count]-1 are multiple-choice and
+     * exactly 1 is fill-in-the-blank (all fill-in when [count] is 1), so every batch contributes
+     * at least one question a child can't pass by lucky guessing. */
     suspend fun generateBatchFromTopic(context: Context, topic: String, count: Int): BatchResult =
         withContext(Dispatchers.IO) {
             if (topic.isBlank()) {
@@ -176,11 +185,14 @@ object QuestionAiGenerator {
                 val askedFor = count.coerceIn(1, 10)
                 val response = llm.generateResponse(buildBatchPrompt(topic, askedFor))
                 Log.d(TAG, "generateBatchFromTopic raw response (${response.length} chars): $response")
-                // The model sometimes writes more (or fewer) questions than asked for — cap to
-                // what the parent actually requested rather than dumping every extra one on
-                // them in the review screen.
-                val parsed = parseBatchResponse(response)?.take(askedFor)
-                if (parsed.isNullOrEmpty()) {
+                // The model sometimes writes more (or fewer) questions than asked for — cap
+                // each kind separately so the guaranteed fill-in question never gets crowded out
+                // by an MCQ overrun before take() gets to it.
+                val mcqTarget = (askedFor - 1).coerceAtLeast(0)
+                val mcq = (parseBatchResponse(response) ?: emptyList()).take(mcqTarget)
+                val fillIn = parseFillInBlocks(response).take(1)
+                val parsed = mcq + fillIn
+                if (parsed.isEmpty()) {
                     BatchResult.Unavailable(
                         "The AI's answer didn't come back in a format I could read. Try again " +
                             "with a more specific topic."
@@ -201,13 +213,15 @@ object QuestionAiGenerator {
      * the child actually understood the material, so the AI is explicitly told to write its own
      * original questions rather than lift the pages'. Works whether the photos are a worksheet
      * with existing questions, plain textbook pages, or class notes — they don't need to already
-     * contain questions. [count] defaults to [defaultScanQuestionCount], which scales up a
-     * little with how many pages were scanned rather than asking for the same fixed count
-     * regardless of how much material was actually covered. Returns [BatchResult.Unavailable]
-     * (rather than throwing) when the model isn't installed, so the caller can fall back to the
-     * original manual-entry flow instead of breaking scanning entirely. [imagePaths] (the
-     * persisted photo(s) for this scan session, if any — see PhotoScanCapture) becomes every
-     * draft's [DraftQuestion.sourcePageImages] unconditionally, and is also the fallback
+     * contain questions. [count]-1 are multiple-choice and exactly 1 is fill-in-the-blank (all
+     * fill-in when [count] is 1), same guaranteed-no-luck mix as [generateBatchFromTopic].
+     * [count] defaults to [defaultScanQuestionCount], which scales up a little with how many
+     * pages were scanned rather than asking for the same fixed count regardless of how much
+     * material was actually covered. Returns [BatchResult.Unavailable] (rather than throwing)
+     * when the model isn't installed, so the caller can fall back to the original manual-entry
+     * flow instead of breaking scanning entirely. [imagePaths] (the persisted photo(s) for this
+     * scan session, if any — see PhotoScanCapture) becomes every draft's
+     * [DraftQuestion.sourcePageImages] unconditionally, and is also the fallback
      * [DraftQuestion.imagePaths] for a question when nothing better can be found; [blocks] (that
      * session's OCR'd text blocks with position, also from PhotoScanCapture) lets
      * [matchAndCropRegion] try to narrow that down to just the part of the page a given question
@@ -235,18 +249,22 @@ object QuestionAiGenerator {
                 val response = llm.generateResponse(buildComprehensionPrompt(pages, askedFor))
                 Log.d(TAG, "generateComprehensionQuestionsFromScan raw response " +
                     "(${response.length} chars, ${pages.size} page(s)): $response")
-                // The model sometimes writes more (or fewer) questions than asked for — cap to
-                // what the parent actually requested rather than dumping every extra one on
-                // them in the review screen. For each question, try to find the region of the
-                // page(s) its wording actually matches (e.g. the specific pictograph it's
-                // asking about on a page with several) and crop just that region — a scanned
-                // page can cover more than one question's worth of content, and showing every
-                // question the entire page is otherwise both less useful and more cluttered than
-                // showing just the relevant part. Falls back to every page photo, unmatched
-                // (the previous behavior), when no confident match is found for a question —
-                // and every draft keeps the original page(s) as sourcePageImages regardless, so
-                // a bad auto-crop is never unrecoverable.
-                val parsed = parseBatchResponse(response)?.take(askedFor)?.map { draft ->
+                // The model sometimes writes more (or fewer) questions than asked for — cap
+                // each kind separately (see generateBatchFromTopic) so the guaranteed fill-in
+                // question survives. For each question, try to find the region of the page(s)
+                // its wording actually matches (e.g. the specific pictograph it's asking about
+                // on a page with several) and crop just that region — a scanned page can cover
+                // more than one question's worth of content, and showing every question the
+                // entire page is otherwise both less useful and more cluttered than showing just
+                // the relevant part. Falls back to every page photo, unmatched (the previous
+                // behavior), when no confident match is found for a question — and every draft
+                // keeps the original page(s) as sourcePageImages regardless, so a bad auto-crop
+                // is never unrecoverable.
+                val mcqTarget = (askedFor - 1).coerceAtLeast(0)
+                val mcq = (parseBatchResponse(response) ?: emptyList()).take(mcqTarget)
+                val fillIn = parseFillInBlocks(response).take(1)
+                val combined = mcq + fillIn
+                val parsed = if (combined.isEmpty()) null else combined.map { draft ->
                     val croppedPath = matchAndCropRegion(context, draft, blocks)
                     draft.copy(
                         imagePaths = if (croppedPath != null) listOf(croppedPath) else imagePaths,
@@ -343,7 +361,7 @@ object QuestionAiGenerator {
      * whole [ScannedRegion]s (clusters of nearby OCR blocks — see [clusterBlocksIntoRegions]),
      * not individual blocks, so the matched area actually covers a whole figure rather than one
      * line of it. Scores every region by how many [significantTokens] it shares with the
-     * question's prompt + options, keeps the best-scoring one, and requires at least
+     * question's prompt + options/answer, keeps the best-scoring one, and requires at least
      * [MIN_MATCH_TOKENS] shared words before trusting the guess enough to crop — one incidental
      * shared word isn't strong enough signal, and cropping the wrong part of the page would be
      * worse than just showing the whole thing. On a confident match, crops that region (plus
@@ -357,7 +375,8 @@ object QuestionAiGenerator {
         blocks: List<ScannedTextBlock>
     ): String? {
         if (blocks.isEmpty()) return null
-        val questionTokens = significantTokens(draft.prompt + " " + draft.options.joinToString(" "))
+        val answerText = draft.options.joinToString(" ").ifBlank { draft.correctAnswerText ?: "" }
+        val questionTokens = significantTokens(draft.prompt + " " + answerText)
         if (questionTokens.isEmpty()) return null
 
         val regions = clusterBlocksIntoRegions(blocks)
@@ -422,23 +441,42 @@ object QuestionAiGenerator {
         Question: ${questionText.trim()}
     """.trimIndent()
 
-    private fun buildBatchPrompt(topic: String, count: Int): String = """
-        You are helping a parent build a multiple-choice quiz for their child on this topic:
-        "${topic.trim()}". Write exactly $count different questions about it, appropriate for a
-        school-age child. Ask concrete, specific questions with a single clear factual answer —
-        avoid vague or abstract questions about the topic in general (e.g. "Why is this topic
-        important?" or "What is this topic about?"). For each question, give exactly four short
-        answer options labeled A to D with exactly one correct answer. Reply with ONLY this
-        format, one block per question, nothing else, separated by a line containing only ---:
-
-        Q: <question text>
-        A) <option>
-        B) <option>
-        C) <option>
-        D) <option>
-        CORRECT: <letter>
-        ---
-    """.trimIndent()
+    /** Asks for [count]-1 multiple-choice blocks plus exactly 1 fill-in-the-blank block (all
+     * fill-in when [count] is 1) — see [generateBatchFromTopic]'s doc for why. Two distinct,
+     * clearly-labeled block formats (rather than one format with a type flag) keeps parsing
+     * reliable on a small on-device model that doesn't always follow formatting instructions to
+     * the letter — see [parseBatchResponse]/[parseFillInBlocks]'s docs. */
+    private fun buildBatchPrompt(topic: String, count: Int): String {
+        val mcqCount = (count - 1).coerceAtLeast(0)
+        val sb = StringBuilder()
+        sb.append("You are helping a parent build a quiz for their child on this topic: \"")
+            .append(topic.trim()).append("\".\n\n")
+        if (mcqCount > 0) {
+            sb.append("First, write exactly ").append(mcqCount)
+                .append(
+                    " different multiple-choice questions about it, appropriate for a " +
+                        "school-age child. Ask concrete, specific questions with a single " +
+                        "clear factual answer — avoid vague or abstract questions about the " +
+                        "topic in general (e.g. \"Why is this topic important?\" or \"What is " +
+                        "this topic about?\"). For each question, give exactly four short " +
+                        "answer options labeled A to D with exactly one correct answer. Use " +
+                        "exactly this format, one block per question, separated by a line " +
+                        "containing only ---:\n\n" +
+                        "Q: <question text>\nA) <option>\nB) <option>\nC) <option>\n" +
+                        "D) <option>\nCORRECT: <letter>\n---\n\n"
+                )
+        }
+        sb.append(
+            "Then write exactly 1 fill-in-the-blank question about the same topic — a " +
+                "question with no answer choices, where the child has to type the answer " +
+                "themselves rather than pick from options, so there is no chance of guessing " +
+                "correctly by luck. Keep the correct answer short (a single word or a short " +
+                "phrase). Use exactly this format:\n\n" +
+                "FILL_IN: <question text>\nANSWER: <short correct answer>\n\n" +
+                "Reply with ONLY the requested question block(s) above, nothing else."
+        )
+        return sb.toString()
+    }
 
     /** Builds the comprehension-question prompt from one or more scanned pages. A single page
      * is inlined as-is (matches the original single-photo prompt exactly). Multiple pages are
@@ -449,7 +487,9 @@ object QuestionAiGenerator {
      * on-device generation kept defaulting to those ("What is the goal of the activity?", "How
      * is the information presented?") instead of asking about the actual facts/numbers/names in
      * the content, which is both harder for a child to answer meaningfully and rarely has a
-     * single unambiguous correct option among the four choices. */
+     * single unambiguous correct option among the four choices. Also asks for [count]-1 MCQ
+     * blocks plus exactly 1 fill-in-the-blank block, same guaranteed-no-luck mix as
+     * [buildBatchPrompt]. */
     private fun buildComprehensionPrompt(scannedPages: List<String>, count: Int): String {
         val perPageBudget = (MAX_SCAN_CHARS_TOTAL / scannedPages.size).coerceAtLeast(300)
         val multiPage = scannedPages.size > 1
@@ -461,36 +501,48 @@ object QuestionAiGenerator {
         }.joinToString("\n\n")
         val sourceDescription = if (multiPage) "photos of ${scannedPages.size} pages" else "a photo of a page"
         val materialReference = if (multiPage) "this text across all the pages" else "this text"
-        return """
-        Below is text recognized from $sourceDescription a child is studying — this could be a
-        textbook page, class notes, or a worksheet. Ignore anything that isn't part of the
-        actual lesson content (headings, page numbers, printed instructions like "Answer the
-        following"). Based on the concepts, facts, and ideas covered in $materialReference, write
-        exactly $count NEW multiple-choice questions that check whether the child understood the
-        material. Do NOT simply copy, reformat, or lightly reword any questions that may already
-        be printed on the page(s) — write original questions of your own, at a similar
-        difficulty, that a student who truly understood the material would be able to answer.
-        Ask concrete questions about specific facts, numbers, names, quantities, steps, or
-        relationships that actually appear in the material — never ask abstract or "meta"
-        questions about the text or activity itself, such as "What is the goal of the activity?",
-        "How is the information presented?", or "What is this passage about?". A well-written
-        question should only be answerable by someone who read the specific content, not
-        guessable from the question's own wording.
-        For each question, give exactly four short answer options labeled A to D with exactly
-        one correct answer. Reply with ONLY this format, one block per question, nothing else,
-        separated by a line containing only ---:
+        val mcqCount = (count - 1).coerceAtLeast(0)
 
-        Q: <question text>
-        A) <option>
-        B) <option>
-        C) <option>
-        D) <option>
-        CORRECT: <letter>
-        ---
-
-        Scanned text:
-        $pagesBlock
-        """.trimIndent()
+        val sb = StringBuilder()
+        sb.append(
+            "Below is text recognized from $sourceDescription a child is studying — this " +
+                "could be a textbook page, class notes, or a worksheet. Ignore anything that " +
+                "isn't part of the actual lesson content (headings, page numbers, printed " +
+                "instructions like \"Answer the following\"). Based on the concepts, facts, " +
+                "and ideas covered in $materialReference:\n\n"
+        )
+        if (mcqCount > 0) {
+            sb.append(
+                "First, write exactly $mcqCount NEW multiple-choice questions that check " +
+                    "whether the child understood the material. Do NOT simply copy, reformat, " +
+                    "or lightly reword any questions that may already be printed on the " +
+                    "page(s) — write original questions of your own, at a similar difficulty, " +
+                    "that a student who truly understood the material would be able to answer. " +
+                    "Ask concrete questions about specific facts, numbers, names, quantities, " +
+                    "steps, or relationships that actually appear in the material — never ask " +
+                    "abstract or \"meta\" questions about the text or activity itself, such as " +
+                    "\"What is the goal of the activity?\", \"How is the information " +
+                    "presented?\", or \"What is this passage about?\". A well-written question " +
+                    "should only be answerable by someone who read the specific content, not " +
+                    "guessable from the question's own wording. For each question, give " +
+                    "exactly four short answer options labeled A to D with exactly one correct " +
+                    "answer. Use exactly this format, one block per question, separated by a " +
+                    "line containing only ---:\n\n" +
+                    "Q: <question text>\nA) <option>\nB) <option>\nC) <option>\nD) <option>\n" +
+                    "CORRECT: <letter>\n---\n\n"
+            )
+        }
+        sb.append(
+            "Then write exactly 1 NEW fill-in-the-blank question about the same material — a " +
+                "question with no answer choices, about a specific fact/number/name/quantity " +
+                "actually in the text, where the child has to type the answer themselves " +
+                "rather than pick from options, so there is no chance of guessing correctly by " +
+                "luck. Keep the correct answer short (a single word or a short phrase). Use " +
+                "exactly this format:\n\nFILL_IN: <question text>\nANSWER: <short correct " +
+                "answer>\n\nReply with ONLY the requested question block(s) above, nothing " +
+                "else.\n\nScanned text:\n$pagesBlock"
+        )
+        return sb.toString()
     }
 
     private fun parseSingleResponse(text: String): Result.Success? {
@@ -535,12 +587,43 @@ object QuestionAiGenerator {
                 null
             } else {
                 DraftQuestion(
-                    cleanField(g[1]),
-                    listOf(cleanField(g[2]), cleanField(g[3]), cleanField(g[4]), cleanField(g[5])),
-                    correctIndex
+                    prompt = cleanField(g[1]),
+                    options = listOf(cleanField(g[2]), cleanField(g[3]), cleanField(g[4]), cleanField(g[5])),
+                    correctIndex = correctIndex,
+                    questionType = QuestionType.MCQ
                 )
             }
         }
+    }
+
+    /** Parses one or more "FILL_IN: ... ANSWER: ..." blocks out of a response — the
+     * fill-in-the-blank counterpart to [parseBatchResponse]. Same tolerant approach: fields
+     * aren't required to be on their own line, and the block is bounded by a lookahead for the
+     * next block's start ("---", "FILL_IN:", "Q:") or end of text rather than a literal
+     * separator, since the small on-device model doesn't always emit "---" between blocks.
+     * DOT_MATCHES_ALL is needed here (unlike parseBatchResponse) because the non-greedy "."
+     * between FILL_IN: and ANSWER: has to be able to cross the line break the prompt's own
+     * format asks for; the lookahead terminators are what keep it from over-matching into the
+     * next block instead. A block with a blank question or answer is skipped rather than
+     * failing the whole batch. */
+    private fun parseFillInBlocks(text: String): List<DraftQuestion> {
+        val blockRegex = Regex(
+            """FILL_IN:\s*(.+?)\s*,?\s*ANSWER:\s*(.+?)\s*(?=---|FILL_IN:|Q:\s|$)""",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
+        return blockRegex.findAll(text).mapNotNull { m ->
+            val prompt = cleanField(m.groupValues[1])
+            val answer = cleanField(m.groupValues[2])
+            if (prompt.isBlank() || answer.isBlank()) {
+                null
+            } else {
+                DraftQuestion(
+                    prompt = prompt,
+                    questionType = QuestionType.FILL_IN,
+                    correctAnswerText = answer
+                )
+            }
+        }.toList()
     }
 
     /** The on-device model occasionally writes a literal two-character "\n" (backslash then n)

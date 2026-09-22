@@ -6,10 +6,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.learntoplay.app.data.db.entities.QuestionType
 import com.learntoplay.app.data.db.entities.imagePathList
 import com.learntoplay.app.util.ScannedImage
 
@@ -65,13 +69,32 @@ fun QuizScreen(viewModel: QuizViewModel, onDone: () -> Unit) {
                     }
 
                     Spacer(Modifier.height(24.dp))
-                    listOf("A" to q.optionA, "B" to q.optionB, "C" to q.optionC, "D" to q.optionD)
-                        .forEach { (key, text) ->
-                            OutlinedButton(
-                                onClick = { viewModel.answer(key) },
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                            ) { Text(text) }
-                        }
+
+                    if (q.questionType == QuestionType.FILL_IN) {
+                        // Free-text entry — no options to guess from, so getting this one right
+                        // means the child actually knew the answer.
+                        var typedAnswer by remember(q.id) { mutableStateOf("") }
+                        OutlinedTextField(
+                            value = typedAnswer,
+                            onValueChange = { typedAnswer = it },
+                            label = { Text("Type your answer") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Button(
+                            onClick = { viewModel.answerFillIn(typedAnswer) },
+                            enabled = typedAnswer.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Submit") }
+                    } else {
+                        listOf("A" to q.optionA, "B" to q.optionB, "C" to q.optionC, "D" to q.optionD)
+                            .forEach { (key, text) ->
+                                OutlinedButton(
+                                    onClick = { viewModel.answer(key) },
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                                ) { Text(text) }
+                            }
+                    }
                 }
             }
         }

@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.db.entities.GatedAppEntity
 import com.learntoplay.app.data.db.entities.QuestionEntity
+import com.learntoplay.app.data.repository.AnswerMatcher
 import com.learntoplay.app.data.repository.QuizRepository
 import com.learntoplay.app.remote.FamilySyncRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,10 +59,23 @@ class QuizViewModel(private val db: AppDatabase, context: Context) : ViewModel()
         }
     }
 
+    /** MCQ path — question.correctOption is one of "A"/"B"/"C"/"D". */
     fun answer(selectedOption: String) {
+        val question = _state.value.questions.getOrNull(_state.value.currentIndex) ?: return
+        advance(question, question.correctOption == selectedOption)
+    }
+
+    /** FILL_IN path — the child typed a free-text answer, matched leniently via AnswerMatcher
+     * so formatting slip-ups (case, spacing, punctuation) don't cost them, but they still have
+     * to actually know the answer — no multiple-choice luck involved. */
+    fun answerFillIn(typedText: String) {
+        val question = _state.value.questions.getOrNull(_state.value.currentIndex) ?: return
+        val isCorrect = AnswerMatcher.isCorrect(typedText, question.correctAnswerText ?: "")
+        advance(question, isCorrect)
+    }
+
+    private fun advance(question: QuestionEntity, isCorrect: Boolean) {
         val s = _state.value
-        val question = s.questions.getOrNull(s.currentIndex) ?: return
-        val isCorrect = question.correctOption == selectedOption
         val nextIndex = s.currentIndex + 1
         val nextCorrect = s.correctCount + if (isCorrect) 1 else 0
 

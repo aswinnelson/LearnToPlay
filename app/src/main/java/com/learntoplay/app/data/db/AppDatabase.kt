@@ -23,7 +23,7 @@ import com.learntoplay.app.data.db.entities.*
         GatedAppEntity::class,
         AdminSettingsEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -49,6 +49,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v3 -> v4: adds fill-in-the-blank question support — questionType (defaults 'MCQ' so
+         * every existing row keeps working unchanged) and correctAnswerText (nullable, only set
+         * for FILL_IN rows). Both plain ADD COLUMN, no rebuild needed. */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE questions ADD COLUMN questionType TEXT NOT NULL DEFAULT 'MCQ'")
+                db.execSQL("ALTER TABLE questions ADD COLUMN correctAnswerText TEXT")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -56,11 +66,11 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "learn_to_play.db"
                 )
-                    .addMigrations(MIGRATION_2_3)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                     // Pre-MVP safety net: any FUTURE schema bump that doesn't get a real
                     // Migration written for it still recreates the DB instead of crashing, the
-                    // same as before v3 — but the v2->v3 step itself is now a real migration
-                    // (above), so this feature doesn't wipe existing questions/quiz history.
+                    // same as before v3 — but v2->v3 and v3->v4 are both real migrations
+                    // (above), so existing questions/quiz history survive both.
                     .fallbackToDestructiveMigration()
                     .build().also { INSTANCE = it }
             }

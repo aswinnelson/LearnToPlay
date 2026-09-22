@@ -17,6 +17,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.learntoplay.app.ai.QuestionAiGenerator
 import com.learntoplay.app.data.db.entities.QuestionEntity
+import com.learntoplay.app.data.db.entities.QuestionType
 import com.learntoplay.app.data.db.entities.toImagePathsColumn
 import com.learntoplay.app.util.PendingShare
 import com.learntoplay.app.util.ScannedImage
@@ -30,14 +31,18 @@ import kotlinx.coroutines.launch
  * without bound. See [QuestionAiGenerator.generateComprehensionQuestionsFromScan]. */
 private const val MAX_SCAN_PAGES = 5
 
-/** Parent-facing question bank for one curriculum: add, edit, or remove multiple-choice
- * questions — typed by hand, started from one or more photos of whatever the child is studying
- * (Stage C OCR, now paired with on-device AI that writes fresh comprehension-check questions
- * about that content rather than just copying whatever's printed on it — a parent can scan
- * several pages of the same topic before generating, and the questions cover all of them
- * together), started from content shared in from another app (e.g. a teacher's WhatsApp
- * message — see [incomingShare]), and/or drafted from just a topic name. Every AI path lands in
- * a review step; nothing is saved to the question bank without the parent explicitly saving it.
+/** Parent-facing question bank for one curriculum: add, edit, or remove multiple-choice and
+ * fill-in-the-blank questions — typed by hand, started from one or more photos of whatever the
+ * child is studying (Stage C OCR, now paired with on-device AI that writes fresh
+ * comprehension-check questions about that content rather than just copying whatever's printed
+ * on it — a parent can scan several pages of the same topic before generating, and the
+ * questions cover all of them together), started from content shared in from another app (e.g.
+ * a teacher's WhatsApp message — see [incomingShare]), and/or drafted from just a topic name.
+ * Every AI batch mixes in at least one fill-in-the-blank question alongside the multiple-choice
+ * ones (see QuestionAiGenerator), so a quiz built from this bank isn't pure multiple-choice
+ * guessing — see QuizRepository.getQuizQuestions for how that's enforced per-quiz. Every AI path
+ * lands in a review step; nothing is saved to the question bank without the parent explicitly
+ * saving it.
  *
  * [incomingShare], when non-null, is handled once on first composition (see the
  * `remember { incomingShare }` latch below) and fed into the very same scan-session pipeline a
@@ -206,23 +211,30 @@ fun ManageQuestionsScreen(
             onDiscardAll = { draftReview.clear(); showBatchReview = false },
             onSaveAll = {
                 draftReview.forEach { d ->
-                    if (d.prompt.isNotBlank() && d.optionA.isNotBlank() && d.optionB.isNotBlank() &&
-                        d.optionC.isNotBlank() && d.optionD.isNotBlank()
-                    ) {
+                    val isFillIn = d.questionType == QuestionType.FILL_IN
+                    val isValid = if (isFillIn) {
+                        d.prompt.isNotBlank() && d.correctAnswerText.isNotBlank()
+                    } else {
+                        d.prompt.isNotBlank() && d.optionA.isNotBlank() && d.optionB.isNotBlank() &&
+                            d.optionC.isNotBlank() && d.optionD.isNotBlank()
+                    }
+                    if (isValid) {
                         viewModel.upsertQuestion(
                             QuestionEntity(
                                 id = 0,
                                 curriculumId = curriculumId,
                                 prompt = d.prompt.trim(),
-                                optionA = d.optionA.trim(),
-                                optionB = d.optionB.trim(),
-                                optionC = d.optionC.trim(),
-                                optionD = d.optionD.trim(),
-                                correctOption = d.correctOption,
+                                optionA = if (isFillIn) "" else d.optionA.trim(),
+                                optionB = if (isFillIn) "" else d.optionB.trim(),
+                                optionC = if (isFillIn) "" else d.optionC.trim(),
+                                optionD = if (isFillIn) "" else d.optionD.trim(),
+                                correctOption = if (isFillIn) "" else d.correctOption,
                                 timesAsked = 0,
                                 timesCorrect = 0,
                                 lastAskedAtEpochMillis = 0L,
-                                imagePaths = d.imagePaths.toImagePathsColumn()
+                                imagePaths = d.imagePaths.toImagePathsColumn(),
+                                questionType = d.questionType,
+                                correctAnswerText = if (isFillIn) d.correctAnswerText.trim() else null
                             )
                         )
                     }
@@ -314,10 +326,9 @@ fun ManageQuestionsScreen(
                     ListItem(
                         headlineContent = { Text(q.prompt, maxLines = 2) },
                         supportingContent = {
-                            Text(
-                                if (q.timesAsked > 0) "Asked ${q.timesAsked}× • ${q.timesCorrect}/${q.timesAsked} correct"
+                            val stats = if (q.timesAsked > 0) "Asked ${q.timesAsked}× • ${q.timesCorrect}/${q.timesAsked} correct"
                                 else "Not asked yet"
-                            )
+                            Text(if (q.questionType == QuestionType.FILL_IN) "Fill in the blank • $stats" else stats)
                         },
                         trailingContent = {
                             IconButton(onClick = { viewModel.deleteQuestion(q.id) }) {
@@ -425,13 +436,16 @@ private fun ScanPageChoiceDialog(
 
 /** One AI-drafted question's editable fields, backed by Compose state so the review list below
  * can be edited in place before saving — mirrors [QuestionEntity]'s fields minus the ones that
- * only make sense for an already-saved question (id, ask stats). [imagePaths] is mutable (not a
+ * only make sense for an already-saved question (id, ask stats). [questionType] is fixed at
+ * whatever the AI drafted it as (MCQ vs fill-in-the-blank) — not editable in review, matching
+ * how other AI-decided shape (e.g. sourcePageImages) works here. [imagePaths] is mutable (not a
  * plain `val`) so the "Adjust picture" flow (see [ManualCropDialog]) can replace it in place —
  * [sourcePageImages] stays fixed at whatever the scan session originally produced, so a manual
  * re-crop always starts from the original full-resolution photo(s), never from an already
  * auto-cropped image. */
 private class DraftQuestionState(seed: QuestionAiGenerator.DraftQuestion) {
     val sourcePageImages: List<String> = seed.sourcePageImages
+    val questionType: String = seed.questionType
     var imagePaths by mutableStateOf(seed.imagePaths)
     var prompt by mutableStateOf(seed.prompt)
     var optionA by mutableStateOf(seed.options.getOrElse(0) { "" })
@@ -439,6 +453,7 @@ private class DraftQuestionState(seed: QuestionAiGenerator.DraftQuestion) {
     var optionC by mutableStateOf(seed.options.getOrElse(2) { "" })
     var optionD by mutableStateOf(seed.options.getOrElse(3) { "" })
     var correctOption by mutableStateOf("ABCD".getOrElse(seed.correctIndex) { 'A' }.toString())
+    var correctAnswerText by mutableStateOf(seed.correctAnswerText ?: "")
 }
 
 /** Small input dialog for the "From Topic" batch generator: just a topic/chapter and how many
@@ -456,9 +471,11 @@ private fun TopicBatchDialog(onGenerate: (topic: String, count: Int) -> Unit, on
         text = {
             Column {
                 Text(
-                    "The AI will write a new set of questions from scratch — you'll review " +
-                        "every one before anything is saved. On a real phone this can take a " +
-                        "minute or two once you tap Generate; keep the app open until it's done.",
+                    "The AI will write a new set of questions from scratch — including at " +
+                        "least one fill-in-the-blank question so it's not all multiple choice " +
+                        "— and you'll review every one before anything is saved. On a real " +
+                        "phone this can take a minute or two once you tap Generate; keep the " +
+                        "app open until it's done.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(12.dp))
@@ -495,7 +512,9 @@ private fun TopicBatchDialog(onGenerate: (topic: String, count: Int) -> Unit, on
  * Every field stays editable, any draft can be dropped individually, and nothing reaches the
  * question bank until "Save All" — same "AI drafts, parent decides" contract as the
  * single-question flow. A scan- or share-derived draft also gets an "Adjust picture" button
- * (see [ManualCropDialog]) for overriding the automatic image match/crop by hand. */
+ * (see [ManualCropDialog]) for overriding the automatic image match/crop by hand. Each draft
+ * renders either the four-option MCQ editor or a single correct-answer field, depending on
+ * [DraftQuestionState.questionType]. */
 @Composable
 private fun QuestionBatchReviewContent(
     drafts: List<DraftQuestionState>,
@@ -532,7 +551,11 @@ private fun QuestionBatchReviewContent(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Question ${index + 1}", style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    "Question ${index + 1}" +
+                                        if (draft.questionType == QuestionType.FILL_IN) " • Fill in the blank" else "",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
                                 IconButton(onClick = { onRemove(index) }) {
                                     Icon(Icons.Default.Delete, contentDescription = "Remove this draft")
                                 }
@@ -563,10 +586,19 @@ private fun QuestionBatchReviewContent(
                                 modifier = Modifier.fillMaxWidth()
                             )
                             Spacer(Modifier.height(4.dp))
-                            DraftOptionRow("A", draft.optionA, { draft.optionA = it }, draft.correctOption == "A") { draft.correctOption = "A" }
-                            DraftOptionRow("B", draft.optionB, { draft.optionB = it }, draft.correctOption == "B") { draft.correctOption = "B" }
-                            DraftOptionRow("C", draft.optionC, { draft.optionC = it }, draft.correctOption == "C") { draft.correctOption = "C" }
-                            DraftOptionRow("D", draft.optionD, { draft.optionD = it }, draft.correctOption == "D") { draft.correctOption = "D" }
+                            if (draft.questionType == QuestionType.FILL_IN) {
+                                OutlinedTextField(
+                                    value = draft.correctAnswerText,
+                                    onValueChange = { draft.correctAnswerText = it },
+                                    label = { Text("Correct answer") },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            } else {
+                                DraftOptionRow("A", draft.optionA, { draft.optionA = it }, draft.correctOption == "A") { draft.correctOption = "A" }
+                                DraftOptionRow("B", draft.optionB, { draft.optionB = it }, draft.correctOption == "B") { draft.correctOption = "B" }
+                                DraftOptionRow("C", draft.optionC, { draft.optionC = it }, draft.correctOption == "C") { draft.correctOption = "C" }
+                                DraftOptionRow("D", draft.optionD, { draft.optionD = it }, draft.correctOption == "D") { draft.correctOption = "D" }
+                            }
                         }
                     }
                 }
@@ -632,20 +664,26 @@ private fun QuestionEditDialog(
     onSave: (QuestionEntity) -> Unit,
     onDismiss: () -> Unit
 ) {
+    var questionType by remember { mutableStateOf(existing?.questionType ?: QuestionType.MCQ) }
     var prompt by remember { mutableStateOf(existing?.prompt ?: scannedText ?: "") }
     var optionA by remember { mutableStateOf(existing?.optionA ?: "") }
     var optionB by remember { mutableStateOf(existing?.optionB ?: "") }
     var optionC by remember { mutableStateOf(existing?.optionC ?: "") }
     var optionD by remember { mutableStateOf(existing?.optionD ?: "") }
-    var correctOption by remember { mutableStateOf(existing?.correctOption ?: "A") }
+    var correctOption by remember { mutableStateOf(existing?.correctOption?.takeIf { it.isNotBlank() } ?: "A") }
+    var correctAnswerText by remember { mutableStateOf(existing?.correctAnswerText ?: "") }
 
     var aiBusy by remember { mutableStateOf(false) }
     var aiError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    val isValid = prompt.isNotBlank() && optionA.isNotBlank() && optionB.isNotBlank() &&
-        optionC.isNotBlank() && optionD.isNotBlank()
+    val isValid = if (questionType == QuestionType.FILL_IN) {
+        prompt.isNotBlank() && correctAnswerText.isNotBlank()
+    } else {
+        prompt.isNotBlank() && optionA.isNotBlank() && optionB.isNotBlank() &&
+            optionC.isNotBlank() && optionD.isNotBlank()
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -660,82 +698,124 @@ private fun QuestionEditDialog(
                     )
                     Spacer(Modifier.height(8.dp))
                 }
+
+                // Question type: multiple choice (four options, tap one) or fill-in-the-blank
+                // (child types the answer). At least one FILL_IN question per quiz is guaranteed
+                // by QuizRepository.getQuizQuestions whenever the curriculum has any, so this is
+                // where a parent adds that guaranteed-no-luck question.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(
+                        selected = questionType == QuestionType.MCQ,
+                        onClick = { questionType = QuestionType.MCQ },
+                        label = { Text("Multiple choice") }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    FilterChip(
+                        selected = questionType == QuestionType.FILL_IN,
+                        onClick = { questionType = QuestionType.FILL_IN },
+                        label = { Text("Fill in the blank") }
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+
                 OutlinedTextField(
                     prompt, { prompt = it }, label = { Text("Question") },
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(8.dp))
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(
-                        enabled = prompt.isNotBlank() && !aiBusy,
-                        onClick = {
-                            aiBusy = true
-                            aiError = null
-                            coroutineScope.launch {
-                                when (val result = QuestionAiGenerator.generateOptions(context, prompt)) {
-                                    is QuestionAiGenerator.Result.Success -> {
-                                        optionA = result.options[0]
-                                        optionB = result.options[1]
-                                        optionC = result.options[2]
-                                        optionD = result.options[3]
-                                        correctOption = "ABCD"[result.correctIndex].toString()
-                                    }
-                                    is QuestionAiGenerator.Result.Unavailable -> {
-                                        aiError = result.reason
-                                    }
-                                }
-                                aiBusy = false
-                            }
-                        }
-                    ) { Text(if (aiBusy) "Generating…" else "Generate options with AI") }
-                    if (aiBusy) {
-                        Spacer(Modifier.width(8.dp))
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    }
-                }
-                aiError?.let { message ->
+                if (questionType == QuestionType.FILL_IN) {
+                    OutlinedTextField(
+                        value = correctAnswerText,
+                        onValueChange = { correctAnswerText = it },
+                        label = { Text("Correct answer") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(4.dp))
                     Text(
-                        message,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error
+                        "Checked leniently — capitalization, spacing, and punctuation don't " +
+                            "have to match exactly, but the child still has to type the right " +
+                            "word(s). Use Scan Photo or From Topic if you'd like the AI to " +
+                            "draft one of these for you instead.",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            enabled = prompt.isNotBlank() && !aiBusy,
+                            onClick = {
+                                aiBusy = true
+                                aiError = null
+                                coroutineScope.launch {
+                                    when (val result = QuestionAiGenerator.generateOptions(context, prompt)) {
+                                        is QuestionAiGenerator.Result.Success -> {
+                                            optionA = result.options[0]
+                                            optionB = result.options[1]
+                                            optionC = result.options[2]
+                                            optionD = result.options[3]
+                                            correctOption = "ABCD"[result.correctIndex].toString()
+                                        }
+                                        is QuestionAiGenerator.Result.Unavailable -> {
+                                            aiError = result.reason
+                                        }
+                                    }
+                                    aiBusy = false
+                                }
+                            }
+                        ) { Text(if (aiBusy) "Generating…" else "Generate options with AI") }
+                        if (aiBusy) {
+                            Spacer(Modifier.width(8.dp))
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                    aiError?.let { message ->
+                        Text(
+                            message,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+
+                    OptionRow("A", optionA, { optionA = it }, correctOption == "A") { correctOption = "A" }
+                    OptionRow("B", optionB, { optionB = it }, correctOption == "B") { correctOption = "B" }
+                    OptionRow("C", optionC, { optionC = it }, correctOption == "C") { correctOption = "C" }
+                    OptionRow("D", optionD, { optionD = it }, correctOption == "D") { correctOption = "D" }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Tap the circle next to the correct answer. AI-drafted options are a " +
+                            "starting point — always double-check them before saving.",
+                        style = MaterialTheme.typography.labelSmall
                     )
                 }
-                Spacer(Modifier.height(4.dp))
-
-                OptionRow("A", optionA, { optionA = it }, correctOption == "A") { correctOption = "A" }
-                OptionRow("B", optionB, { optionB = it }, correctOption == "B") { correctOption = "B" }
-                OptionRow("C", optionC, { optionC = it }, correctOption == "C") { correctOption = "C" }
-                OptionRow("D", optionD, { optionD = it }, correctOption == "D") { correctOption = "D" }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Tap the circle next to the correct answer. AI-drafted options are a " +
-                        "starting point — always double-check them before saving.",
-                    style = MaterialTheme.typography.labelSmall
-                )
             }
         },
         confirmButton = {
             TextButton(
                 enabled = isValid,
                 onClick = {
+                    val isFillIn = questionType == QuestionType.FILL_IN
                     onSave(
                         QuestionEntity(
                             id = existing?.id ?: 0,
                             curriculumId = curriculumId,
                             prompt = prompt.trim(),
-                            optionA = optionA.trim(),
-                            optionB = optionB.trim(),
-                            optionC = optionC.trim(),
-                            optionD = optionD.trim(),
-                            correctOption = correctOption,
+                            // FILL_IN rows leave these four unused ("" sentinel) — see
+                            // QuestionEntity's doc comment for why they stay non-null.
+                            optionA = if (isFillIn) "" else optionA.trim(),
+                            optionB = if (isFillIn) "" else optionB.trim(),
+                            optionC = if (isFillIn) "" else optionC.trim(),
+                            optionD = if (isFillIn) "" else optionD.trim(),
+                            correctOption = if (isFillIn) "" else correctOption,
                             timesAsked = existing?.timesAsked ?: 0,
                             timesCorrect = existing?.timesCorrect ?: 0,
                             lastAskedAtEpochMillis = existing?.lastAskedAtEpochMillis ?: 0L,
                             // Manual add/edit doesn't attach or remove images in this dialog —
                             // preserve whatever an existing question already had; a brand new
                             // manually-typed question simply has none.
-                            imagePaths = existing?.imagePaths
+                            imagePaths = existing?.imagePaths,
+                            questionType = questionType,
+                            correctAnswerText = if (isFillIn) correctAnswerText.trim() else null
                         )
                     )
                 }
