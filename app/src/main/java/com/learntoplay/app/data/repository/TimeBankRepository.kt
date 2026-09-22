@@ -23,13 +23,14 @@ class TimeBankRepository(private val db: AppDatabase) {
     /** Looks up the matching rule for a score. Used by ScoreTimeMappingScreen for editing —
      * actually crediting the time bank now happens atomically inside
      * QuizRepository.submitQuizAndAwardTime(), not here, so a quiz result and its reward can
-     * never go out of sync. */
+     * never go out of sync. See ScoreTimeCalculator (also used by QuizRepository) for the
+     * actual band-matching logic and its unit tests. */
     suspend fun ruleForScore(scorePercent: Int): ScoreTimeRuleEntity? =
-        getRules().firstOrNull { scorePercent in it.minScorePercent..it.maxScorePercent }
+        ScoreTimeCalculator.ruleForScore(scorePercent, getRules())
 
     suspend fun spendSeconds(seconds: Long) {
         val current = db.adminSettingsDao().getOnce()?.timeBankSecondsRemaining ?: 0L
-        db.adminSettingsDao().setTimeBankSeconds(maxOf(0L, current - seconds))
+        db.adminSettingsDao().setTimeBankSeconds(ScoreTimeCalculator.clampNonNegative(current - seconds))
     }
 
     suspend fun getBalanceSeconds(): Long =
@@ -39,6 +40,6 @@ class TimeBankRepository(private val db: AppDatabase) {
      * same row the tracker service ticks down and the child's Home screen observes, so an
      * edit mid-session takes effect on the very next tick without racing it. */
     suspend fun setBalanceSeconds(seconds: Long) {
-        db.adminSettingsDao().setTimeBankSeconds(maxOf(0L, seconds))
+        db.adminSettingsDao().setTimeBankSeconds(ScoreTimeCalculator.clampNonNegative(seconds))
     }
 }

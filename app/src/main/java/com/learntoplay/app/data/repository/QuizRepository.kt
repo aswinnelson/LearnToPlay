@@ -76,6 +76,11 @@ class QuizRepository(private val db: AppDatabase) {
      * result insert, and the time-bank credit as a single unit: either all three happen or
      * none do.
      *
+     * The score -> percent -> minutes math itself lives in ScoreTimeCalculator (shared with
+     * TimeBankRepository.ruleForScore), which is unit-tested directly — see
+     * ScoreTimeCalculatorTest — since that's the actual decision a parent is trusting this app
+     * to get right every time, independent of whatever this method does with the database.
+     *
      * Note: this assumes an admin_settings row already exists (created when the parent first
      * sets a PIN in AdminRepository.setPin). In practice that's guaranteed — a curriculum has
      * to be selected in Admin Mode before a quiz can run at all (see QuizViewModel.start()),
@@ -86,11 +91,10 @@ class QuizRepository(private val db: AppDatabase) {
         correctCount: Int,
         totalCount: Int
     ): QuizSubmissionResult = db.withTransaction {
-        val scorePercent = if (totalCount == 0) 0 else (correctCount * 100) / totalCount
+        val scorePercent = ScoreTimeCalculator.scorePercent(correctCount, totalCount)
 
         val rules = db.scoreTimeRuleDao().observeAll().first()
-        val minutesAwarded = rules.firstOrNull { scorePercent in it.minScorePercent..it.maxScorePercent }
-            ?.minutesAwarded ?: 0
+        val minutesAwarded = ScoreTimeCalculator.minutesForScore(scorePercent, rules)
 
         db.quizResultDao().insert(
             QuizResultEntity(

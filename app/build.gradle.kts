@@ -110,4 +110,16 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // --- Testing (app/src/test — JVM unit tests, no device/emulator needed) ---
+    // First test dependencies this project has ever had: covers the time-bank / quiz-scoring
+    // math in ScoreTimeCalculator (see ScoreTimeCalculatorTest) — the part flagged in the MVP
+    // status doc as having zero test coverage. Deliberately plain JUnit with no Robolectric/
+    // Room-in-memory-database layer: that approach was tried first, but hit a real JDK-version
+    // incompatibility on this machine (Robolectric's bytecode instrumentation couldn't parse
+    // class files from the system JDK). Pulling the actual scoring math out into a pure,
+    // dependency-free object (ScoreTimeCalculator) sidesteps that entirely and is what both
+    // QuizRepository and TimeBankRepository now call, so this coverage exercises the real
+    // production logic, not a reimplementation of it.
+    testImplementation("junit:junit:4.13.2")
 }
