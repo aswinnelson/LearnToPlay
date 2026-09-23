@@ -35,6 +35,15 @@ class LockOverlayManager(private val context: Context) {
     fun hasOverlayPermission(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)
 
+    /**
+     * True while the gate overlay is currently on screen. AppLockAccessibilityService uses this
+     * to tell apart a genuine "child switched to our own app" accessibility event from the
+     * self-generated window-state-changed event that adding this very overlay produces (the
+     * overlay is focusable — see the comment on FLAG_NOT_FOCUSABLE below — so the platform
+     * reports it as a new window belonging to our package the instant it's added).
+     */
+    fun isShowing(): Boolean = overlayView != null
+
     fun showQuizGate() {
         check(Looper.myLooper() == Looper.getMainLooper()) { "showQuizGate() must be called from the main thread" }
         if (overlayView != null) return
@@ -63,7 +72,10 @@ class LockOverlayManager(private val context: Context) {
             overlayType(),
             // Deliberately NOT FLAG_NOT_TOUCHABLE — the overlay must intercept every touch on
             // the gated app below it. It also omits FLAG_NOT_FOCUSABLE so the "Start quiz"
-            // button is reliably clickable across OEM skins.
+            // button is reliably clickable across OEM skins. Being focusable means the platform
+            // fires a window-state-changed accessibility event for THIS window the moment it's
+            // added, reported under our own package name — AppLockAccessibilityService has to
+            // know to ignore that specific echo (see isShowing() above).
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         )

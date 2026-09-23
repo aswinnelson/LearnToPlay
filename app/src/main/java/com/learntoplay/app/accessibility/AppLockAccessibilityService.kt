@@ -2,6 +2,7 @@ package com.learntoplay.app.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
 import com.learntoplay.app.data.db.AppDatabase
@@ -30,6 +31,7 @@ class AppLockAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         overlayManager = LockOverlayManager(applicationContext)
+        Log.d(TAG, "onServiceConnected")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -48,9 +50,24 @@ class AppLockAccessibilityService : AccessibilityService() {
     }
 
     private suspend fun handleForegroundChange(packageName: String) {
+        Log.d(TAG, "foreground changed: $packageName")
+
         // Never gate our own UI (e.g. the child would get stuck if the overlay covered
         // MainActivity while it's showing the quiz).
+        //
+        // IMPORTANT: the gate overlay window itself is focusable (see LockOverlayManager —
+        // FLAG_NOT_FOCUSABLE is deliberately omitted so "Start quiz" is reliably clickable
+        // across OEM skins), so the instant showQuizGate() adds it, the platform fires its
+        // own WINDOW_STATE_CHANGED event for that new window under OUR package name. Without
+        // the isShowing() check below, that self-generated event lands right here and hides
+        // the overlay a moment after it appears — a "flash" of the gate message before the
+        // gated app becomes fully usable again. Only treat this as a genuine switch back to
+        // our own app when we're not the one who just put a window of ours on screen.
         if (packageName == applicationContext.packageName) {
+            if (::overlayManager.isInitialized && overlayManager.isShowing()) {
+                Log.d(TAG, "ignoring self-generated window event from our own gate overlay")
+                return
+            }
             withContext(Dispatchers.Main) {
                 overlayManager.hide()
                 stopTimeBankTracking()
@@ -72,6 +89,7 @@ class AppLockAccessibilityService : AccessibilityService() {
         }
 
         val balance = db.adminSettingsDao().getOnce()?.timeBankSecondsRemaining ?: 0L
+        Log.d(TAG, "$packageName is gated, balance=${balance}s")
         withContext(Dispatchers.Main) {
             if (balance > 0) {
                 overlayManager.hide()
@@ -84,6 +102,7 @@ class AppLockAccessibilityService : AccessibilityService() {
                 // for the running API level.
                 ContextCompat.startForegroundService(applicationContext, trackerIntent)
             } else {
+                Log.d(TAG, "showing quiz gate over $packageName")
                 overlayManager.showQuizGate()
             }
         }
@@ -105,5 +124,6 @@ class AppLockAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val DEBOUNCE_MS = 250L
+        private const val TAG = "AppLockAccessibility"
     }
 }
