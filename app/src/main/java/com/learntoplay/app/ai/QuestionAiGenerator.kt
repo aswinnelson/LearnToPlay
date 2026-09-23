@@ -499,12 +499,21 @@ object QuestionAiGenerator {
             "closely reword any of them; write genuinely different questions:\n$listed\n"
     }
 
-    /** Asks for [count]-1 multiple-choice blocks plus exactly 1 fill-in-the-blank block (all
-     * fill-in when [count] is 1) — see [generateBatchFromTopic]'s doc for why. Two distinct,
-     * clearly-labeled block formats (rather than one format with a type flag) keeps parsing
-     * reliable on a small on-device model that doesn't always follow formatting instructions to
-     * the letter — see [parseBatchResponse]/[parseFillInBlocks]'s docs. [existingPrompts] adds
-     * the "don't repeat these" note from [buildAvoidDuplicatesNote]. */
+    /** Asks for exactly 1 fill-in-the-blank block FIRST, then [count]-1 multiple-choice blocks
+     * (all fill-in when [count] is 1) — see [generateBatchFromTopic]'s doc for why the mix
+     * matters. The fill-in question is asked for first deliberately: this on-device model has a
+     * limited reply budget ([MAX_TOKENS], shared with the whole prompt), and on a long batch it
+     * sometimes runs out mid-reply — confirmed via the raw-response logging above, where the
+     * fill-in block (previously asked for last) got cut off after "FILL_IN: <question>" with no
+     * "ANSWER:" line at all. Since the fill-in question is the one guaranteed slot every batch
+     * relies on (see QuizRepository.getQuizQuestions), it needs to be the block most likely to
+     * finish, not the one most likely to get truncated — losing a multiple-choice question or
+     * two off the end of a long reply is a far smaller loss than losing the only fill-in
+     * question and forcing the whole batch to fail. Two distinct, clearly-labeled block formats
+     * (rather than one format with a type flag) keeps parsing reliable on a small on-device
+     * model that doesn't always follow formatting instructions to the letter — see
+     * [parseBatchResponse]/[parseFillInBlocks]'s docs. [existingPrompts] adds the "don't repeat
+     * these" note from [buildAvoidDuplicatesNote]. */
     private fun buildBatchPrompt(topic: String, count: Int, existingPrompts: List<String> = emptyList()): String {
         val mcqCount = (count - 1).coerceAtLeast(0)
         val sb = StringBuilder()
@@ -512,8 +521,15 @@ object QuestionAiGenerator {
             .append(topic.trim()).append("\".")
         sb.append(buildAvoidDuplicatesNote(existingPrompts))
         sb.append("\n\n")
+        sb.append(
+            "First, write exactly 1 fill-in-the-blank question about it — a question with no " +
+                "answer choices, where the child has to type the answer themselves rather than " +
+                "pick from options, so there is no chance of guessing correctly by luck. Keep " +
+                "the correct answer short (a single word or a short phrase). Use exactly this " +
+                "format:\n\nFILL_IN: <question text>\nANSWER: <short correct answer>\n\n"
+        )
         if (mcqCount > 0) {
-            sb.append("First, write exactly ").append(mcqCount)
+            sb.append("Then write exactly ").append(mcqCount)
                 .append(
                     " different multiple-choice questions about it, appropriate for a " +
                         "school-age child. Ask concrete, specific questions with a single " +
@@ -527,15 +543,7 @@ object QuestionAiGenerator {
                         "D) <option>\nCORRECT: <letter>\n---\n\n"
                 )
         }
-        sb.append(
-            "Then write exactly 1 fill-in-the-blank question about the same topic — a " +
-                "question with no answer choices, where the child has to type the answer " +
-                "themselves rather than pick from options, so there is no chance of guessing " +
-                "correctly by luck. Keep the correct answer short (a single word or a short " +
-                "phrase). Use exactly this format:\n\n" +
-                "FILL_IN: <question text>\nANSWER: <short correct answer>\n\n" +
-                "Reply with ONLY the requested question block(s) above, nothing else."
-        )
+        sb.append("Reply with ONLY the requested question block(s) above, nothing else.")
         return sb.toString()
     }
 
@@ -548,10 +556,10 @@ object QuestionAiGenerator {
      * on-device generation kept defaulting to those ("What is the goal of the activity?", "How
      * is the information presented?") instead of asking about the actual facts/numbers/names in
      * the content, which is both harder for a child to answer meaningfully and rarely has a
-     * single unambiguous correct option among the four choices. Also asks for [count]-1 MCQ
-     * blocks plus exactly 1 fill-in-the-blank block, same guaranteed-no-luck mix as
-     * [buildBatchPrompt], and the same [existingPrompts] "don't repeat these" note via
-     * [buildAvoidDuplicatesNote]. */
+     * single unambiguous correct option among the four choices. Asks for the fill-in-the-blank
+     * block FIRST, then [count]-1 MCQ blocks — same reordering, and for the same
+     * truncation-avoidance reason, as [buildBatchPrompt] (see its doc) — and the same
+     * [existingPrompts] "don't repeat these" note via [buildAvoidDuplicatesNote]. */
     private fun buildComprehensionPrompt(
         scannedPages: List<String>,
         count: Int,
@@ -579,9 +587,18 @@ object QuestionAiGenerator {
         )
         sb.append(buildAvoidDuplicatesNote(existingPrompts))
         sb.append("\n\n")
+        sb.append(
+            "First, write exactly 1 NEW fill-in-the-blank question about the material — a " +
+                "question with no answer choices, about a specific fact/number/name/quantity " +
+                "actually in the text, where the child has to type the answer themselves " +
+                "rather than pick from options, so there is no chance of guessing correctly by " +
+                "luck. Keep the correct answer short (a single word or a short phrase). Use " +
+                "exactly this format:\n\nFILL_IN: <question text>\nANSWER: <short correct " +
+                "answer>\n\n"
+        )
         if (mcqCount > 0) {
             sb.append(
-                "First, write exactly $mcqCount NEW multiple-choice questions that check " +
+                "Then write exactly $mcqCount NEW multiple-choice questions that check " +
                     "whether the child understood the material. Do NOT simply copy, reformat, " +
                     "or lightly reword any questions that may already be printed on the " +
                     "page(s) — write original questions of your own, at a similar difficulty, " +
@@ -601,20 +618,18 @@ object QuestionAiGenerator {
             )
         }
         sb.append(
-            "Then write exactly 1 NEW fill-in-the-blank question about the same material — a " +
-                "question with no answer choices, about a specific fact/number/name/quantity " +
-                "actually in the text, where the child has to type the answer themselves " +
-                "rather than pick from options, so there is no chance of guessing correctly by " +
-                "luck. Keep the correct answer short (a single word or a short phrase). Use " +
-                "exactly this format:\n\nFILL_IN: <question text>\nANSWER: <short correct " +
-                "answer>\n\nReply with ONLY the requested question block(s) above, nothing " +
-                "else.\n\nScanned text:\n$pagesBlock"
+            "Reply with ONLY the requested question block(s) above, nothing else.\n\n" +
+                "Scanned text:\n$pagesBlock"
         )
         return sb.toString()
     }
 
     private fun parseSingleResponse(text: String): Result.Success? {
-        val optionRegex = Regex("""^[ABCD]\)\s*(.+)$""", RegexOption.MULTILINE)
+        // [ABCD] is followed by either ")" or "." in practice — the prompt asks for "A)" but
+        // the on-device model sometimes writes "A." instead (confirmed via the raw-response
+        // logging above), and the old ")"-only pattern silently rejected an otherwise
+        // perfectly good reply whenever that happened.
+        val optionRegex = Regex("""^[ABCD][).]\s*(.+)$""", RegexOption.MULTILINE)
         val options = optionRegex.findAll(text).map { cleanField(it.groupValues[1]) }.toList()
         val correctLetter = Regex("""CORRECT:\s*([ABCD])""", RegexOption.IGNORE_CASE)
             .find(text)?.groupValues?.get(1)?.uppercase()
@@ -629,21 +644,23 @@ object QuestionAiGenerator {
      * how the fields are laid out — one per line (the format asked for in the prompt) OR all
      * run together on a single line separated by spaces/commas (what the on-device model
      * actually tends to do — confirmed via the raw-response logging above: it reliably produces
-     * the right content, just not always the requested line breaks). The earlier version of
-     * this regex required a literal newline between fields and was silently rejecting every
-     * otherwise-valid block a single-line reply produced — that was the real bug behind
-     * generation "not working," not the model. Also not dependent on the "---" separator
-     * actually showing up verbatim, since small on-device models don't always follow formatting
-     * instructions to the letter. A block whose CORRECT isn't exactly one of A/B/C/D (the model
-     * occasionally echoes the answer's value instead of its letter) simply doesn't match and is
-     * skipped, rather than failing the whole batch. Deliberately NOT using DOT_MATCHES_ALL: each
-     * captured field is expected to be plain text with no embedded newline, and keeping "."
-     * confined to a single line is what stops a block with a malformed CORRECT value (see
-     * above) from backtracking across the "---" separator and bleeding into the next block —
-     * the field separators still cross line breaks fine since \s already matches newlines. */
+     * the right content, just not always the requested line breaks), AND of "A." in place of
+     * "A)" (also confirmed via the raw-response logging — the model doesn't always use the
+     * exact punctuation the prompt asks for either). The earlier version of this regex required
+     * a literal newline between fields (and only ")", not ".", after each letter) and was
+     * silently rejecting otherwise-valid blocks — that was the real bug behind generation "not
+     * working," not the model. Also not dependent on the "---" separator actually showing up
+     * verbatim, since small on-device models don't always follow formatting instructions to the
+     * letter. A block whose CORRECT isn't exactly one of A/B/C/D (the model occasionally echoes
+     * the answer's value instead of its letter) simply doesn't match and is skipped, rather than
+     * failing the whole batch. Deliberately NOT using DOT_MATCHES_ALL: each captured field is
+     * expected to be plain text with no embedded newline, and keeping "." confined to a single
+     * line is what stops a block with a malformed CORRECT value (see above) from backtracking
+     * across the "---" separator and bleeding into the next block — the field separators still
+     * cross line breaks fine since \s already matches newlines. */
     private fun parseBatchResponse(text: String): List<DraftQuestion>? {
         val blockRegex = Regex(
-            """Q:\s*(.+?)\s*,?\s*A\)\s*(.+?)\s*,?\s*B\)\s*(.+?)\s*,?\s*C\)\s*(.+?)\s*,?\s*D\)\s*(.+?)\s*,?\s*CORRECT:\s*([ABCD])\b""",
+            """Q:\s*(.+?)\s*,?\s*A[).]\s*(.+?)\s*,?\s*B[).]\s*(.+?)\s*,?\s*C[).]\s*(.+?)\s*,?\s*D[).]\s*(.+?)\s*,?\s*CORRECT:\s*([ABCD])\b""",
             RegexOption.IGNORE_CASE
         )
         val matches = blockRegex.findAll(text).toList()
@@ -673,7 +690,12 @@ object QuestionAiGenerator {
      * between FILL_IN: and ANSWER: has to be able to cross the line break the prompt's own
      * format asks for; the lookahead terminators are what keep it from over-matching into the
      * next block instead. A block with a blank question or answer is skipped rather than
-     * failing the whole batch. */
+     * failing the whole batch. This block is now asked for FIRST in both batch prompts (see
+     * [buildBatchPrompt]/[buildComprehensionPrompt]) specifically so it's less likely to be the
+     * one that's missing its ANSWER: line because the model ran out of reply budget partway
+     * through — if a reply does get cut off, this still only matches a genuinely complete
+     * "FILL_IN: ... ANSWER: ..." pair, so a truncated block (no ANSWER: at all) correctly
+     * produces nothing rather than a bogus fill-in question with a garbage answer. */
     private fun parseFillInBlocks(text: String): List<DraftQuestion> {
         val blockRegex = Regex(
             """FILL_IN:\s*(.+?)\s*,?\s*ANSWER:\s*(.+?)\s*(?=---|FILL_IN:|Q:\s|$)""",
