@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Manifest-side twin of FeatureFlags.AI_QUESTION_TOOLS: whether LearnToPlay appears as a
+         target in other apps' share sheets (share-to-app question generation). The manifest
+         can't read a Kotlin constant, so this lives here. Keep it in sync with FeatureFlags. -->
+    <bool name="share_to_app_enabled">false</bool>
+</resources>

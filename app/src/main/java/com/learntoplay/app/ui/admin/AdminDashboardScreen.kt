@@ -12,6 +12,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.learntoplay.app.BuildConfig
+import com.learntoplay.app.FeatureFlags
 import com.learntoplay.app.util.AllowedWindowChecker
 import com.learntoplay.app.util.OverlayPermissions
 
@@ -209,7 +211,7 @@ fun AdminDashboardScreen(
 
         Spacer(Modifier.height(24.dp))
         Button(onClick = onManageCurriculum, modifier = Modifier.fillMaxWidth()) {
-            Text("Select Curriculum")
+            Text("Curriculum & Questions")
         }
         Spacer(Modifier.height(8.dp))
         Button(onClick = onManageScoreTimeRules, modifier = Modifier.fillMaxWidth()) {
@@ -223,9 +225,14 @@ fun AdminDashboardScreen(
         Button(onClick = onViewHistory, modifier = Modifier.fillMaxWidth()) {
             Text("Quiz History")
         }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = onOpenDeviceSettings, modifier = Modifier.fillMaxWidth()) {
-            Text("Device & Remote Settings")
+        // Everything on Device & Remote Settings is hidden in the MVP build (see FeatureFlags),
+        // so the button goes too — except in debug builds, where it still leads to the
+        // test-crash tool.
+        if (FeatureFlags.REMOTE_AND_PARENT_ACCOUNT || FeatureFlags.TAMPER_PROTECTION || BuildConfig.DEBUG) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onOpenDeviceSettings, modifier = Modifier.fillMaxWidth()) {
+                Text("Device & Remote Settings")
+            }
         }
         Spacer(Modifier.height(24.dp))
         OutlinedButton(onClick = onExitAdmin, modifier = Modifier.fillMaxWidth()) {

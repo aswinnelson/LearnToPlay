@@ -6,6 +6,7 @@ import com.google.firebase.crashlytics.FirebaseCrashlytics
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import com.learntoplay.app.FeatureFlags
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.repository.TimeBankRepository
 import kotlinx.coroutines.CoroutineScope
@@ -101,6 +102,9 @@ object FamilySyncRepository {
      * Crashlytics as non-fatals, so a *pattern* of sync failures is visible to us even though
      * no single failure is worth interrupting the child over. */
     suspend fun pushSnapshot(context: Context, db: AppDatabase) {
+        // MVP build: remote monitoring is hidden, so nothing about the child's usage should
+        // leave the device for a feature no one can see or use. See FeatureFlags.
+        if (!FeatureFlags.REMOTE_AND_PARENT_ACCOUNT) return
         if (!ensureSignedIn()) return
         val code = getOrCreateFamilyCode(context)
 
@@ -218,6 +222,7 @@ object FamilySyncRepository {
      * an unauthenticated listener would just fail immediately with PERMISSION_DENIED instead
      * of quietly waiting. */
     suspend fun listenForCommands(context: Context, db: AppDatabase): ListenerRegistration? {
+        if (!FeatureFlags.REMOTE_AND_PARENT_ACCOUNT) return null // MVP build — see FeatureFlags
         if (!ensureSignedIn()) return null
         val code = getOrCreateFamilyCode(context)
         val commandsRef = FirebaseFirestore.getInstance()

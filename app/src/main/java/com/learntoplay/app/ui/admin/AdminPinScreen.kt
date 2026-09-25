@@ -96,8 +96,11 @@ fun AdminPinScreen(viewModel: AdminViewModel, onUnlocked: () -> Unit, onViewRemo
 
         // Deliberately outside the PIN gate above — this is for viewing a *different* device's
         // synced data, which has nothing to do with this phone's own local PIN.
-        TextButton(onClick = onViewRemoteDevice, modifier = Modifier.fillMaxWidth()) {
-            Text("View a paired child device")
+        // Hidden in the MVP build — see FeatureFlags.REMOTE_AND_PARENT_ACCOUNT.
+        if (com.learntoplay.app.FeatureFlags.REMOTE_AND_PARENT_ACCOUNT) {
+            TextButton(onClick = onViewRemoteDevice, modifier = Modifier.fillMaxWidth()) {
+                Text("View a paired child device")
+            }
         }
     }
 }

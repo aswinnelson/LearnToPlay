@@ -264,8 +264,12 @@ fun ManageQuestionsScreen(
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
                 }
-                TextButton(onClick = { launchScan() }, enabled = !scanBusy && !topicBusy) { Text("Scan Photo") }
-                TextButton(onClick = { showTopicDialog = true }, enabled = !scanBusy && !topicBusy) { Text("From Topic") }
+                // Hidden in the MVP build — see FeatureFlags.AI_QUESTION_TOOLS. Manual entry via
+                // the "+" button below is the only way to add questions there.
+                if (com.learntoplay.app.FeatureFlags.AI_QUESTION_TOOLS) {
+                    TextButton(onClick = { launchScan() }, enabled = !scanBusy && !topicBusy) { Text("Scan Photo") }
+                    TextButton(onClick = { showTopicDialog = true }, enabled = !scanBusy && !topicBusy) { Text("From Topic") }
+                }
                 IconButton(onClick = { scannedText = null; showAddDialog = true }) {
                     Icon(Icons.Default.Add, contentDescription = "Add question")
                 }

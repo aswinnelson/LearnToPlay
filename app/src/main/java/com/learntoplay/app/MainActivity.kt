@@ -74,6 +74,9 @@ class MainActivity : ComponentActivity() {
      * if nothing was shared, rather than crashing the app a parent just tried to hand content
      * to. */
     private fun extractPendingShare(intent: Intent): PendingShare? {
+        // Belt-and-braces with the manifest alias being disabled (res/values/feature_flags.xml):
+        // even if a share intent somehow arrives, the MVP build never routes it anywhere.
+        if (!FeatureFlags.AI_QUESTION_TOOLS) return null
         if (intent.action != Intent.ACTION_SEND) return null
         return when {
             intent.type == "text/plain" -> {

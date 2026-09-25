@@ -11,6 +11,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.learntoplay.app.FeatureFlags
+import com.learntoplay.app.data.seed.PresetCurriculumSeed
 
 /** Lets a parent pick which curriculum is active for the child (bundled preset or one they
  * created themselves), start a brand-new curriculum from scratch, and jump into managing that
@@ -21,7 +23,13 @@ fun CurriculumSelectScreen(
     onManageQuestions: (String) -> Unit,
     onBack: () -> Unit
 ) {
-    val curricula by viewModel.curricula.collectAsState(initial = emptyList())
+    val allCurricula by viewModel.curricula.collectAsState(initial = emptyList())
+    // MVP build hides the bundled sample curricula (FeatureFlags.CURRICULUM_PRESETS) — except
+    // one that's already the active curriculum on an existing install, so the child's current
+    // quiz source never vanishes from the parent's view without explanation.
+    val presetIds = remember { PresetCurriculumSeed.curricula.map { it.id }.toSet() }
+    val curricula = if (FeatureFlags.CURRICULUM_PRESETS) allCurricula
+        else allCurricula.filter { it.id !in presetIds || it.isSelectedByAdmin }
     var showCreateDialog by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().padding(24.dp)) {
@@ -36,6 +44,19 @@ fun CurriculumSelectScreen(
             }
         }
         Spacer(Modifier.height(16.dp))
+        if (curricula.isEmpty()) {
+            Text(
+                "No curriculum yet. Tap + to create one (e.g. Maths — Fractions), then tap it to " +
+                    "make it active and tap Questions to add your own.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        } else {
+            Text(
+                "Tap a curriculum to make it the one quizzes use. Tap Questions to add or edit its questions.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Spacer(Modifier.height(8.dp))
         LazyColumn(modifier = Modifier.weight(1f)) {
             items(curricula, key = { it.id }) { c ->
                 ListItem(

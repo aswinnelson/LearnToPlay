@@ -51,6 +51,18 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
+
+        <!-- Share-to-app target (a parent sharing a teacher's WhatsApp text/image straight into
+             question generation). Lives on an alias rather than directly on MainActivity so it
+             can be switched off by resource: @bool/share_to_app_enabled mirrors
+             FeatureFlags.AI_QUESTION_TOOLS, and is false in the MVP build, so the app simply
+             doesn't appear in share sheets. The intent still lands in MainActivity when on. -->
+        <activity-alias
+            android:name=".ShareToAppAlias"
+            android:targetActivity=".MainActivity"
+            android:enabled="@bool/share_to_app_enabled"
+            android:exported="true">
             <!-- Lets a parent share a teacher's WhatsApp message (or any other app's text)
                  straight into LearnToPlay's question-generation pipeline — see
                  MainActivity.extractPendingShare and util/SharedContentImport.kt. Two separate
@@ -66,7 +78,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
             </intent-filter>
-        </activity>
+        </activity-alias>
 
         <!-- Detects foreground app changes; shows the quiz-gate overlay
              when a gated entertainment app is opened without a time-bank balance. -->

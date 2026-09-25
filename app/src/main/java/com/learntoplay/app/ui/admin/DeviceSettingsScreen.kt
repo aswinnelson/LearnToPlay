@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.learntoplay.app.BuildConfig
+import com.learntoplay.app.FeatureFlags
 import com.learntoplay.app.admin.TamperGuard
 import com.learntoplay.app.remote.AuthOutcome
 import kotlinx.coroutines.launch
@@ -67,175 +68,187 @@ fun DeviceSettingsScreen(adminViewModel: AdminViewModel, onBack: () -> Unit) {
     ) {
         Text("Device & Remote Settings", style = MaterialTheme.typography.headlineSmall)
 
-        Spacer(Modifier.height(16.dp))
-        Card {
-            Column(Modifier.padding(16.dp)) {
-                Text("Parent Account", style = MaterialTheme.typography.titleMedium)
-                val signedInEmail = parentEmail
-                if (signedInEmail != null) {
-                    Text(
-                        "Signed in as $signedInEmail. This is what lets you be recognized as " +
-                            "the same parent if you ever set this app up on a second phone.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedButton(onClick = {
-                        adminViewModel.signOutParent()
-                        parentEmail = adminViewModel.currentParentEmail()
-                        authError = null
-                    }) { Text("Sign Out") }
-                } else {
-                    Text(
-                        "Optional for now — not required to use this app. Sets up an account " +
-                            "so you can be recognized as the same parent later, e.g. on a " +
-                            "second phone.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = authEmail,
-                        onValueChange = { authEmail = it; authError = null },
-                        label = { Text("Email") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                        enabled = !authBusy,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = authPassword,
-                        onValueChange = { authPassword = it; authError = null },
-                        label = { Text("Password") },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        enabled = !authBusy,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        val canSubmit = authEmail.isNotBlank() && authPassword.isNotBlank() && !authBusy
-                        Button(
-                            enabled = canSubmit,
-                            onClick = {
-                                authBusy = true
-                                authError = null
-                                val email = authEmail.trim()
-                                val password = authPassword
-                                coroutineScope.launch {
-                                    when (val result = adminViewModel.signUpParent(email, password)) {
-                                        AuthOutcome.Success -> {
-                                            parentEmail = adminViewModel.currentParentEmail()
-                                            authPassword = ""
+        // Hidden in the MVP build — see FeatureFlags.REMOTE_AND_PARENT_ACCOUNT.
+        if (FeatureFlags.REMOTE_AND_PARENT_ACCOUNT) {
+            Spacer(Modifier.height(16.dp))
+            Card {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Parent Account", style = MaterialTheme.typography.titleMedium)
+                    val signedInEmail = parentEmail
+                    if (signedInEmail != null) {
+                        Text(
+                            "Signed in as $signedInEmail. This is what lets you be recognized as " +
+                                "the same parent if you ever set this app up on a second phone.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = {
+                            adminViewModel.signOutParent()
+                            parentEmail = adminViewModel.currentParentEmail()
+                            authError = null
+                        }) { Text("Sign Out") }
+                    } else {
+                        Text(
+                            "Optional for now — not required to use this app. Sets up an account " +
+                                "so you can be recognized as the same parent later, e.g. on a " +
+                                "second phone.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = authEmail,
+                            onValueChange = { authEmail = it; authError = null },
+                            label = { Text("Email") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                            enabled = !authBusy,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = authPassword,
+                            onValueChange = { authPassword = it; authError = null },
+                            label = { Text("Password") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            enabled = !authBusy,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val canSubmit = authEmail.isNotBlank() && authPassword.isNotBlank() && !authBusy
+                            Button(
+                                enabled = canSubmit,
+                                onClick = {
+                                    authBusy = true
+                                    authError = null
+                                    val email = authEmail.trim()
+                                    val password = authPassword
+                                    coroutineScope.launch {
+                                        when (val result = adminViewModel.signUpParent(email, password)) {
+                                            AuthOutcome.Success -> {
+                                                parentEmail = adminViewModel.currentParentEmail()
+                                                authPassword = ""
+                                            }
+                                            is AuthOutcome.Failure -> authError = result.message
                                         }
-                                        is AuthOutcome.Failure -> authError = result.message
+                                        authBusy = false
                                     }
-                                    authBusy = false
                                 }
-                            }
-                        ) { Text("Create Account") }
-                        Spacer(Modifier.width(8.dp))
-                        OutlinedButton(
-                            enabled = canSubmit,
-                            onClick = {
-                                authBusy = true
-                                authError = null
-                                val email = authEmail.trim()
-                                val password = authPassword
-                                coroutineScope.launch {
-                                    when (val result = adminViewModel.signInParent(email, password)) {
-                                        AuthOutcome.Success -> {
-                                            parentEmail = adminViewModel.currentParentEmail()
-                                            authPassword = ""
-                                        }
-                                        is AuthOutcome.Failure -> authError = result.message
-                                    }
-                                    authBusy = false
-                                }
-                            }
-                        ) { Text("Sign In") }
-                        if (authBusy) {
+                            ) { Text("Create Account") }
                             Spacer(Modifier.width(8.dp))
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            OutlinedButton(
+                                enabled = canSubmit,
+                                onClick = {
+                                    authBusy = true
+                                    authError = null
+                                    val email = authEmail.trim()
+                                    val password = authPassword
+                                    coroutineScope.launch {
+                                        when (val result = adminViewModel.signInParent(email, password)) {
+                                            AuthOutcome.Success -> {
+                                                parentEmail = adminViewModel.currentParentEmail()
+                                                authPassword = ""
+                                            }
+                                            is AuthOutcome.Failure -> authError = result.message
+                                        }
+                                        authBusy = false
+                                    }
+                                }
+                            ) { Text("Sign In") }
+                            if (authBusy) {
+                                Spacer(Modifier.width(8.dp))
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            }
+                        }
+                        authError?.let { message ->
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
                         }
                     }
-                    authError?.let { message ->
-                        Spacer(Modifier.height(4.dp))
+                }
+            }
+
+        }
+
+        // Hidden in the MVP build — see FeatureFlags.TAMPER_PROTECTION.
+        if (FeatureFlags.TAMPER_PROTECTION) {
+            Spacer(Modifier.height(16.dp))
+            Card {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Tamper Protection", style = MaterialTheme.typography.titleMedium)
+                    if (isDeviceOwner) {
                         Text(
-                            message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
+                            "Device Owner is active. Blocks uninstalling this app, Safe Mode, " +
+                                "and factory reset from Settings.",
+                            style = MaterialTheme.typography.bodySmall
                         )
+                        Spacer(Modifier.height(8.dp))
+                        Row {
+                            Button(onClick = {
+                                tamperMessage = when (val result = TamperGuard.applyProtections(context)) {
+                                    TamperGuard.ApplyResult.Applied -> "Protections applied."
+                                    is TamperGuard.ApplyResult.Failed -> result.reason
+                                }
+                            }) { Text("Apply") }
+                            Spacer(Modifier.width(8.dp))
+                            OutlinedButton(onClick = {
+                                tamperMessage = when (val result = TamperGuard.removeProtections(context)) {
+                                    TamperGuard.ApplyResult.Applied -> "Protections removed."
+                                    is TamperGuard.ApplyResult.Failed -> result.reason
+                                }
+                            }) { Text("Remove") }
+                        }
+                    } else {
+                        Text(
+                            "Not set up. One-time step outside the app — see setup notes.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    tamperMessage?.let { message ->
+                        Spacer(Modifier.height(4.dp))
+                        Text(message, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
+
         }
 
-        Spacer(Modifier.height(16.dp))
-        Card {
-            Column(Modifier.padding(16.dp)) {
-                Text("Tamper Protection", style = MaterialTheme.typography.titleMedium)
-                if (isDeviceOwner) {
+        // Hidden in the MVP build — see FeatureFlags.REMOTE_AND_PARENT_ACCOUNT.
+        if (FeatureFlags.REMOTE_AND_PARENT_ACCOUNT) {
+            Spacer(Modifier.height(16.dp))
+            Card {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Remote Access", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Device Owner is active. Blocks uninstalling this app, Safe Mode, " +
-                            "and factory reset from Settings.",
+                        "Share once with a parent's separate phone to check in remotely. " +
+                            "Treat it like a shared password.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Spacer(Modifier.height(8.dp))
-                    Row {
-                        Button(onClick = {
-                            tamperMessage = when (val result = TamperGuard.applyProtections(context)) {
-                                TamperGuard.ApplyResult.Applied -> "Protections applied."
-                                is TamperGuard.ApplyResult.Failed -> result.reason
-                            }
-                        }) { Text("Apply") }
-                        Spacer(Modifier.width(8.dp))
-                        OutlinedButton(onClick = {
-                            tamperMessage = when (val result = TamperGuard.removeProtections(context)) {
-                                TamperGuard.ApplyResult.Applied -> "Protections removed."
-                                is TamperGuard.ApplyResult.Failed -> result.reason
-                            }
-                        }) { Text("Remove") }
+                    val code = familyCode
+                    if (code == null) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(code, style = MaterialTheme.typography.headlineSmall)
+                            Spacer(Modifier.width(12.dp))
+                            TextButton(onClick = {
+                                clipboardManager.setText(AnnotatedString(code))
+                                justCopied = true
+                            }) { Text(if (justCopied) "Copied" else "Copy") }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        TextButton(onClick = { adminViewModel.syncNow() }) { Text("Sync Now") }
                     }
-                } else {
-                    Text(
-                        "Not set up. One-time step outside the app — see setup notes.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-                tamperMessage?.let { message ->
-                    Spacer(Modifier.height(4.dp))
-                    Text(message, style = MaterialTheme.typography.bodySmall)
                 }
             }
-        }
 
-        Spacer(Modifier.height(16.dp))
-        Card {
-            Column(Modifier.padding(16.dp)) {
-                Text("Remote Access", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Share once with a parent's separate phone to check in remotely. " +
-                        "Treat it like a shared password.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Spacer(Modifier.height(8.dp))
-                val code = familyCode
-                if (code == null) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(code, style = MaterialTheme.typography.headlineSmall)
-                        Spacer(Modifier.width(12.dp))
-                        TextButton(onClick = {
-                            clipboardManager.setText(AnnotatedString(code))
-                            justCopied = true
-                        }) { Text(if (justCopied) "Copied" else "Copy") }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    TextButton(onClick = { adminViewModel.syncNow() }) { Text("Sync Now") }
-                }
-            }
         }
 
         if (BuildConfig.DEBUG) {
