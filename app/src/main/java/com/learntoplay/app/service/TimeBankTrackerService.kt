@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.repository.TimeBankRepository
@@ -33,6 +34,13 @@ import kotlinx.coroutines.*
  * be received via a runtime-registered receiver) BroadcastReceiver flips a flag the tick
  * loop checks each second.
  *
+ * Allowed Hours pause: same idea as the balance-hits-zero case below, but for the optional
+ * daily curfew window a parent can set (see TimeBankRepository.isOutsideAllowedWindow) — if
+ * the window closes mid-session (e.g. bedtime arrives while the child is still playing), the
+ * tick loop stops itself rather than keep spending a balance that shouldn't be spendable right
+ * now. Like the balance case, the lock overlay itself only reappears on the next window-state
+ * event (AppLockAccessibilityService) — an accepted MVP limitation, not new to this check.
+ *
  * Remote sync: pushes to Firestore every SYNC_INTERVAL_TICKS seconds (not every tick — that
  * would be a write per second, wasteful and pointless for a parent glancing at their phone
  * occasionally) while a gated-app session is active, so a parent checking remotely sees the
@@ -49,14 +57,15 @@ class TimeBankTrackerService : Service() {
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                Intent.ACTION_SCREEN_OFF -> screenOn = false
-                Intent.ACTION_SCREEN_ON -> screenOn = true
+                Intent.ACTION_SCREEN_OFF -> { screenOn = false; Log.d(TAG, "screen off — pausing tick") }
+                Intent.ACTION_SCREEN_ON -> { screenOn = true; Log.d(TAG, "screen on — resuming tick") }
             }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
+        Log.d(TAG, "onCreate")
         startForeground(NOTIFICATION_ID, buildNotification())
 
         val powerManager = getSystemService(PowerManager::class.java)
@@ -72,7 +81,11 @@ class TimeBankTrackerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (tickJob?.isActive == true) return START_STICKY
+        if (tickJob?.isActive == true) {
+            Log.d(TAG, "onStartCommand: tick loop already running, ignoring")
+            return START_STICKY
+        }
+        Log.d(TAG, "onStartCommand: starting tick loop")
         val db = AppDatabase.getInstance(applicationContext)
         val repo = TimeBankRepository(db)
 
@@ -82,13 +95,22 @@ class TimeBankTrackerService : Service() {
                 delay(1000)
                 if (!screenOn) continue // paused: screen is off, don't spend banked time
 
+                if (repo.isOutsideAllowedWindow()) {
+                    Log.d(TAG, "outside allowed hours — stopping tick loop")
+                    FamilySyncRepository.pushSnapshot(applicationContext, db)
+                    stopSelf()
+                    break
+                }
+
                 val remaining = repo.getBalanceSeconds()
                 if (remaining <= 0) {
+                    Log.d(TAG, "balance hit 0 — stopping tick loop")
                     FamilySyncRepository.pushSnapshot(applicationContext, db)
                     stopSelf()
                     break
                 }
                 repo.spendSeconds(1)
+                Log.d(TAG, "tick: spent 1s, remaining=${remaining - 1}s")
 
                 ticksSinceSync++
                 if (ticksSinceSync >= SYNC_INTERVAL_TICKS) {
@@ -118,6 +140,7 @@ class TimeBankTrackerService : Service() {
     }
 
     override fun onDestroy() {
+        Log.d(TAG, "onDestroy — tick loop stopping")
         tickJob?.cancel()
         runCatching { unregisterReceiver(screenStateReceiver) }
         super.onDestroy()
@@ -126,6 +149,7 @@ class TimeBankTrackerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        private const val TAG = "TimeBankTracker"
         private const val CHANNEL_ID = "time_bank_tracker"
         private const val NOTIFICATION_ID = 1001
         private const val SYNC_INTERVAL_TICKS = 30

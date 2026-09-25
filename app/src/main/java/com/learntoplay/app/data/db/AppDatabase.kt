@@ -23,7 +23,7 @@ import com.learntoplay.app.data.db.entities.*
         GatedAppEntity::class,
         AdminSettingsEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -59,6 +59,17 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v4 -> v5: adds the "Allowed Hours" schedule (a daily curfew window on top of the
+         * time-bank mechanic) — three plain ADD COLUMNs on admin_settings, all with defaults
+         * that preserve today's behavior (disabled) for every existing install. */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE admin_settings ADD COLUMN allowedWindowEnabled INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE admin_settings ADD COLUMN allowedWindowStartMinute INTEGER NOT NULL DEFAULT 480")
+                db.execSQL("ALTER TABLE admin_settings ADD COLUMN allowedWindowEndMinute INTEGER NOT NULL DEFAULT 1200")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -66,11 +77,11 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "learn_to_play.db"
                 )
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     // Pre-MVP safety net: any FUTURE schema bump that doesn't get a real
                     // Migration written for it still recreates the DB instead of crashing, the
-                    // same as before v3 — but v2->v3 and v3->v4 are both real migrations
-                    // (above), so existing questions/quiz history survive both.
+                    // same as before v3 — but v2->v3, v3->v4 and v4->v5 are all real migrations
+                    // (above), so existing questions/quiz history/settings survive all three.
                     .fallbackToDestructiveMigration()
                     .build().also { INSTANCE = it }
             }

@@ -19,4 +19,13 @@ interface AdminSettingsDao {
 
     @Query("UPDATE admin_settings SET timeBankSecondsRemaining = :seconds WHERE id = 0")
     suspend fun setTimeBankSeconds(seconds: Long)
+
+    /** Direct column update (not a read-modify-write via [upsert]) so a parent toggling the
+     * Allowed Hours schedule can never race TimeBankTrackerService's once-a-second
+     * timeBankSecondsRemaining writes and silently clobber a tick. */
+    @Query(
+        "UPDATE admin_settings SET allowedWindowEnabled = :enabled, " +
+            "allowedWindowStartMinute = :startMinute, allowedWindowEndMinute = :endMinute WHERE id = 0"
+    )
+    suspend fun setAllowedWindow(enabled: Boolean, startMinute: Int, endMinute: Int)
 }

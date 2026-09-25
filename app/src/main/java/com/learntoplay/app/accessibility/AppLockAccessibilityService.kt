@@ -6,6 +6,7 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
 import com.learntoplay.app.data.db.AppDatabase
+import com.learntoplay.app.util.AllowedWindowChecker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -14,10 +15,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Watches for foreground-app changes. If the foreground app is one the parent gated
- * and the time bank is empty, shows the lock overlay (quiz gate) instead of letting
- * the child use it. This is the "enforcement" half of the loop; TimeBankTrackerService
- * is the "spend the earned time" half.
+ * Watches for foreground-app changes. If the foreground app is one the parent gated, two
+ * independent checks can lock it: an optional daily "Allowed Hours" schedule (a curfew — see
+ * [AllowedWindowChecker]), checked first since it overrides everything else, and then the
+ * time-bank balance (the quiz-to-earn-time mechanic). This is the "enforcement" half of the
+ * loop; TimeBankTrackerService is the "spend the earned time" half.
  *
  * MVP note: only WINDOW_STATE_CHANGED events are observed and canRetrieveWindowContent
  * is false (see accessibility_service_config.xml) — this service never reads on-screen
@@ -88,7 +90,34 @@ class AppLockAccessibilityService : AccessibilityService() {
             return
         }
 
-        val balance = db.adminSettingsDao().getOnce()?.timeBankSecondsRemaining ?: 0L
+        val settings = db.adminSettingsDao().getOnce()
+
+        // Allowed Hours check FIRST, ahead of the time-bank balance: a curfew window is meant
+        // to override how much time is banked, not compete with it. A child with a full bank
+        // still can't play outside the window; there's no quiz to take here that would help.
+        if (settings != null && settings.allowedWindowEnabled &&
+            !AllowedWindowChecker.isWithinWindow(
+                AllowedWindowChecker.currentMinuteOfDay(),
+                settings.allowedWindowStartMinute,
+                settings.allowedWindowEndMinute
+            )
+        ) {
+            Log.d(
+                TAG,
+                "$packageName is gated but outside allowed hours " +
+                    "(${settings.allowedWindowStartMinute}-${settings.allowedWindowEndMinute}) — locking"
+            )
+            withContext(Dispatchers.Main) {
+                stopTimeBankTracking()
+                overlayManager.showOutsideHoursGate(
+                    settings.allowedWindowStartMinute,
+                    settings.allowedWindowEndMinute
+                )
+            }
+            return
+        }
+
+        val balance = settings?.timeBankSecondsRemaining ?: 0L
         Log.d(TAG, "$packageName is gated, balance=${balance}s")
         withContext(Dispatchers.Main) {
             if (balance > 0) {

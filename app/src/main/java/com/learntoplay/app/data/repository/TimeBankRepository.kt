@@ -2,6 +2,7 @@ package com.learntoplay.app.data.repository
 
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.db.entities.ScoreTimeRuleEntity
+import com.learntoplay.app.util.AllowedWindowChecker
 import kotlinx.coroutines.flow.first
 
 /**
@@ -41,5 +42,21 @@ class TimeBankRepository(private val db: AppDatabase) {
      * edit mid-session takes effect on the very next tick without racing it. */
     suspend fun setBalanceSeconds(seconds: Long) {
         db.adminSettingsDao().setTimeBankSeconds(ScoreTimeCalculator.clampNonNegative(seconds))
+    }
+
+    /** True if a parent has turned on the "Allowed Hours" schedule AND the current time falls
+     * outside it — the one curfew check both TimeBankTrackerService (stop ticking) and
+     * AppLockAccessibilityService (show the lock) consult, so a banked balance can never be
+     * spent, and the gate can never be bypassed, outside the window. False (never outside)
+     * when no schedule is configured, which is the case for every existing install until a
+     * parent opts in. */
+    suspend fun isOutsideAllowedWindow(): Boolean {
+        val settings = db.adminSettingsDao().getOnce() ?: return false
+        if (!settings.allowedWindowEnabled) return false
+        return !AllowedWindowChecker.isWithinWindow(
+            AllowedWindowChecker.currentMinuteOfDay(),
+            settings.allowedWindowStartMinute,
+            settings.allowedWindowEndMinute
+        )
     }
 }

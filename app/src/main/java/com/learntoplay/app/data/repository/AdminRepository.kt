@@ -80,6 +80,18 @@ class AdminRepository(private val db: AppDatabase, context: Context) {
         db.gatedAppDao().upsert(GatedAppEntity(packageName, displayName, enabled))
     }
 
+    /** Full admin_settings row as a Flow — used by AdminViewModel.allowedWindow to drive the
+     * Allowed Hours card. (The time-bank balance has its own narrower observeBalanceSeconds()
+     * on TimeBankRepository; this one is for the settings fields that aren't the balance.) */
+    fun observeAdminSettings() = db.adminSettingsDao().observe()
+
+    /** Parent edit from the Admin Dashboard's Allowed Hours card. A direct column update (see
+     * AdminSettingsDao.setAllowedWindow) rather than a read-modify-write, so it can never race
+     * TimeBankTrackerService's once-a-second balance writes. */
+    suspend fun setAllowedWindow(enabled: Boolean, startMinute: Int, endMinute: Int) {
+        db.adminSettingsDao().setAllowedWindow(enabled, startMinute, endMinute)
+    }
+
     suspend fun selectCurriculum(curriculumId: String) {
         db.curriculumDao().clearSelection()
         db.curriculumDao().select(curriculumId)

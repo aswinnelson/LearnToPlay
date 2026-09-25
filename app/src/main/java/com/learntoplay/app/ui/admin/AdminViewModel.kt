@@ -28,6 +28,16 @@ data class QuizHistoryRow(
     val takenAtEpochMillis: Long
 )
 
+/** The "Allowed Hours" schedule as the Admin Dashboard reads and edits it — see
+ * AdminSettingsEntity.allowedWindow* and AppLockAccessibilityService. [startMinute] and
+ * [endMinute] are minutes since midnight (0-1439); a window with startMinute > endMinute
+ * crosses midnight (see AllowedWindowChecker). */
+data class AllowedWindow(
+    val enabled: Boolean,
+    val startMinute: Int,
+    val endMinute: Int
+)
+
 class AdminViewModel(private val db: AppDatabase, context: Context) : ViewModel() {
     private val appContext = context.applicationContext
     private val adminRepo = AdminRepository(db, appContext)
@@ -43,6 +53,17 @@ class AdminViewModel(private val db: AppDatabase, context: Context) : ViewModel(
      * countdown never clobber each other — each just reads-then-writes the current row. */
     val timeBankMinutesRemaining = timeBankRepo.observeBalanceSeconds()
         .map { ((it?.timeBankSecondsRemaining ?: 0L) / 60L).toInt() }
+
+    /** Live Allowed Hours schedule for the Admin Dashboard's card. Defaults (disabled,
+     * 8:00 AM-8:00 PM) match AdminSettingsEntity's own column defaults, used before the
+     * settings row exists yet (i.e. before a PIN has ever been set). */
+    val allowedWindow = adminRepo.observeAdminSettings().map { settings ->
+        AllowedWindow(
+            enabled = settings?.allowedWindowEnabled ?: false,
+            startMinute = settings?.allowedWindowStartMinute ?: DEFAULT_ALLOWED_WINDOW_START,
+            endMinute = settings?.allowedWindowEndMinute ?: DEFAULT_ALLOWED_WINDOW_END
+        )
+    }
 
     val quizHistory = combine(quizRepo.observeHistory(), curricula) { results, allCurricula ->
         val labelsById = allCurricula.associateBy({ it.id }, { "${it.subject} — ${it.chapterTitle}" })
@@ -95,6 +116,15 @@ class AdminViewModel(private val db: AppDatabase, context: Context) : ViewModel(
         syncNow()
     }
 
+    /** Parent edit from the Admin Dashboard's Allowed Hours card — toggling the schedule on/off,
+     * or moving the start/end time. Applied immediately; AppLockAccessibilityService reads the
+     * new values on the very next foreground-app event, and TimeBankTrackerService's tick loop
+     * picks it up on its next tick if a gated-app session is already in progress. */
+    fun setAllowedWindow(enabled: Boolean, startMinute: Int, endMinute: Int) = viewModelScope.launch {
+        adminRepo.setAllowedWindow(enabled, startMinute, endMinute)
+        syncNow()
+    }
+
     /** The random pairing code a parent's separate phone types in to view this device's
      * synced data remotely. Generated once and stable thereafter — see FamilySyncRepository. */
     fun getFamilyCode(): String = FamilySyncRepository.getOrCreateFamilyCode(appContext)
@@ -121,4 +151,9 @@ class AdminViewModel(private val db: AppDatabase, context: Context) : ViewModel(
         AuthRepository.signIn(email, password)
 
     fun signOutParent() = AuthRepository.signOut()
+
+    companion object {
+        const val DEFAULT_ALLOWED_WINDOW_START = 8 * 60
+        const val DEFAULT_ALLOWED_WINDOW_END = 20 * 60
+    }
 }

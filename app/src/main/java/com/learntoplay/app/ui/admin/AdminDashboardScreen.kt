@@ -1,5 +1,6 @@
 package com.learntoplay.app.ui.admin
 
+import android.app.TimePickerDialog
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -11,12 +12,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.learntoplay.app.util.AllowedWindowChecker
 import com.learntoplay.app.util.OverlayPermissions
 
-/** Landing screen for Admin Mode — kept deliberately short (Finish Setup + Time Bank + the
- * four content-management buttons) so it fits on a phone screen with little to no scrolling.
- * Tamper Protection, Remote Access, and debug tools live one tap away on
- * [DeviceSettingsScreen] instead, since those are check-once-in-a-while settings, not
+/** Landing screen for Admin Mode — kept deliberately short (Finish Setup + Time Bank +
+ * Allowed Hours + the four content-management buttons) so it fits on a phone screen with
+ * little to no scrolling. Tamper Protection, Remote Access, and debug tools live one tap away
+ * on [DeviceSettingsScreen] instead, since those are check-once-in-a-while settings, not
  * something a parent opens every time. */
 @Composable
 fun AdminDashboardScreen(
@@ -39,6 +41,14 @@ fun AdminDashboardScreen(
     // live, right above the field.
     var timeBankInput by remember { mutableStateOf("") }
     var justUpdated by remember { mutableStateOf(false) }
+
+    val allowedWindow by adminViewModel.allowedWindow.collectAsState(
+        initial = AllowedWindow(
+            enabled = false,
+            startMinute = AdminViewModel.DEFAULT_ALLOWED_WINDOW_START,
+            endMinute = AdminViewModel.DEFAULT_ALLOWED_WINDOW_END
+        )
+    )
 
     // Re-check permissions every time this screen is shown (returning from Settings after
     // granting one, for instance). Simpler than the lifecycle-observer version this screen
@@ -116,6 +126,82 @@ fun AdminDashboardScreen(
                         "Updated.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Card {
+            Column(Modifier.padding(16.dp)) {
+                Text("Allowed Hours", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Restrict gated apps to specific hours of the day, on top of the time " +
+                        "bank. Outside this window they stay locked no matter how much time " +
+                        "is banked.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Enabled", style = MaterialTheme.typography.bodyMedium)
+                    Switch(
+                        checked = allowedWindow.enabled,
+                        onCheckedChange = {
+                            adminViewModel.setAllowedWindow(it, allowedWindow.startMinute, allowedWindow.endMinute)
+                        }
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = {
+                            TimePickerDialog(
+                                context,
+                                { _, hour, minute ->
+                                    adminViewModel.setAllowedWindow(
+                                        allowedWindow.enabled,
+                                        hour * 60 + minute,
+                                        allowedWindow.endMinute
+                                    )
+                                },
+                                allowedWindow.startMinute / 60,
+                                allowedWindow.startMinute % 60,
+                                false
+                            ).show()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("From ${AllowedWindowChecker.format12Hour(allowedWindow.startMinute)}") }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            TimePickerDialog(
+                                context,
+                                { _, hour, minute ->
+                                    adminViewModel.setAllowedWindow(
+                                        allowedWindow.enabled,
+                                        allowedWindow.startMinute,
+                                        hour * 60 + minute
+                                    )
+                                },
+                                allowedWindow.endMinute / 60,
+                                allowedWindow.endMinute % 60,
+                                false
+                            ).show()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("To ${AllowedWindowChecker.format12Hour(allowedWindow.endMinute)}") }
+                }
+                if (allowedWindow.enabled && allowedWindow.startMinute > allowedWindow.endMinute) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Crosses midnight — allowed overnight from " +
+                            "${AllowedWindowChecker.format12Hour(allowedWindow.startMinute)} until " +
+                            "${AllowedWindowChecker.format12Hour(allowedWindow.endMinute)}.",
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
