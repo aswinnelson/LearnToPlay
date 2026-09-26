@@ -78,11 +78,16 @@ abstract class AppDatabase : RoomDatabase() {
                     "learn_to_play.db"
                 )
                     .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
-                    // Pre-MVP safety net: any FUTURE schema bump that doesn't get a real
-                    // Migration written for it still recreates the DB instead of crashing, the
-                    // same as before v3 — but v2->v3, v3->v4 and v4->v5 are all real migrations
-                    // (above), so existing questions/quiz history/settings survive all three.
-                    .fallbackToDestructiveMigration()
+                    // No blanket fallbackToDestructiveMigration() any more: with real families
+                    // using the app, a future schema bump that forgets its Migration must fail
+                    // loudly in testing, not silently wipe a parent's PIN, questions and quiz
+                    // history on upgrade. Destructive rebuild is kept only for the two cases
+                    // where there's no real user data at stake:
+                    //  - v1: pre-migration scaffolding builds, never shipped to anyone.
+                    //  - downgrades: only happen when a developer installs an older branch's
+                    //    build over a newer one; Play Store never downgrades a user.
+                    .fallbackToDestructiveMigrationFrom(dropAllTables = true, 1)
+                    .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                     .build().also { INSTANCE = it }
             }
     }

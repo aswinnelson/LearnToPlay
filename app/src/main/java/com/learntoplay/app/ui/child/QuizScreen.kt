@@ -12,9 +12,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.learntoplay.app.data.db.entities.QuestionEntity
 import com.learntoplay.app.data.db.entities.QuestionType
 import com.learntoplay.app.data.db.entities.imagePathList
+import com.learntoplay.app.util.PlayTimeFormat
 import com.learntoplay.app.util.ScannedImage
 
 @Composable
@@ -22,27 +25,26 @@ fun QuizScreen(viewModel: QuizViewModel, onDone: () -> Unit) {
     val state by viewModel.state.collectAsState()
 
     Box(Modifier.fillMaxSize().padding(24.dp)) {
+        val blockedMessage = state.blockedMessage
         when {
             state.isComplete -> QuizCompleteContent(state, onDone)
 
-            // No curriculum selected: give the child a way out instead of a dead end with no
-            // navigation (this used to strand the child here with only the system back button).
-            state.noCurriculumSelected -> Column(
+            // No curriculum selected, or the selected one has no questions yet: give the child a
+            // way out instead of a dead end with only the system back button.
+            blockedMessage != null -> Column(
                 Modifier.align(Alignment.Center),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(state.curriculumLabel, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                Text(blockedMessage, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(24.dp))
                 Button(onClick = onDone) { Text("Back") }
             }
 
-            state.questions.isEmpty() -> Text(
-                state.curriculumLabel.ifBlank { "Loading..." },
-                Modifier.align(Alignment.Center)
-            )
+            state.questions.isEmpty() -> Text("Loading...", Modifier.align(Alignment.Center))
 
             else -> {
                 val q = state.questions[state.currentIndex]
+                val answersEnabled = !state.isSubmitting
                 Column(Modifier.fillMaxSize()) {
                     LinearProgressIndicator(
                         progress = { (state.currentIndex).toFloat() / state.questions.size },
@@ -82,23 +84,33 @@ fun QuizScreen(viewModel: QuizViewModel, onDone: () -> Unit) {
                         )
                         Spacer(Modifier.height(12.dp))
                         Button(
-                            onClick = { viewModel.answerFillIn(typedAnswer) },
-                            enabled = typedAnswer.isNotBlank(),
+                            // q.id is passed along so a stray second tap that lands after the
+                            // screen has moved on is ignored rather than answering the next one.
+                            onClick = { viewModel.answerFillIn(q.id, typedAnswer) },
+                            enabled = answersEnabled && typedAnswer.isNotBlank(),
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("Submit") }
                     } else {
-                        listOf("A" to q.optionA, "B" to q.optionB, "C" to q.optionC, "D" to q.optionD)
-                            .forEach { (key, text) ->
-                                OutlinedButton(
-                                    onClick = { viewModel.answer(key) },
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                                ) { Text(text) }
-                            }
+                        val order = state.optionOrder[q.id] ?: listOf("A", "B", "C", "D")
+                        order.forEach { key ->
+                            OutlinedButton(
+                                onClick = { viewModel.answer(q.id, key) },
+                                enabled = answersEnabled,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                            ) { Text(optionText(q, key)) }
+                        }
                     }
                 }
             }
         }
     }
+}
+
+private fun optionText(q: QuestionEntity, key: String): String = when (key) {
+    "A" -> q.optionA
+    "B" -> q.optionB
+    "C" -> q.optionC
+    else -> q.optionD
 }
 
 /**
@@ -126,13 +138,18 @@ private fun QuizCompleteContent(state: QuizUiState, onDone: () -> Unit) {
                 "Almost there — try again to earn play time."
         )
 
-        if (state.totalMinutesRemaining > 0) {
+        if (state.secondsRemaining > 0) {
             Spacer(Modifier.height(4.dp))
             Text(
-                "Time remaining: ${state.totalMinutesRemaining} min",
+                "Time saved up: ${PlayTimeFormat.describe(state.secondsRemaining)}",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary
             )
+        }
+
+        state.allowedHoursMessage?.let { message ->
+            Spacer(Modifier.height(8.dp))
+            Text(message, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium)
         }
 
         Spacer(Modifier.height(24.dp))
@@ -154,7 +171,7 @@ private fun QuizCompleteContent(state: QuizUiState, onDone: () -> Unit) {
             }
             Spacer(Modifier.height(16.dp))
             TextButton(onClick = onDone) { Text("Not now") }
-        } else if (state.totalMinutesRemaining > 0) {
+        } else if (state.secondsRemaining > 0 && state.allowedHoursMessage == null) {
             // Time was earned but the parent hasn't gated any apps yet — nothing to launch, so
             // just send the child to the home screen rather than leaving them here.
             Spacer(Modifier.height(8.dp))

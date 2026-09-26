@@ -5,6 +5,7 @@ import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.db.entities.QuestionEntity
 import com.learntoplay.app.data.db.entities.QuestionType
 import com.learntoplay.app.data.db.entities.QuizResultEntity
+import com.learntoplay.app.util.AllowedWindowChecker
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlin.random.Random
@@ -125,8 +126,9 @@ class QuizRepository(private val db: AppDatabase) {
         )
 
         if (minutesAwarded > 0) {
-            val currentSeconds = db.adminSettingsDao().getOnce()?.timeBankSecondsRemaining ?: 0L
-            db.adminSettingsDao().setTimeBankSeconds(currentSeconds + minutesAwarded * 60L)
+            // Atomic increment (not read-then-write), so a tick from TimeBankTrackerService
+            // can never overwrite the reward — see AdminSettingsDao.addSeconds.
+            db.adminSettingsDao().addSeconds(minutesAwarded * 60L)
         }
 
         QuizSubmissionResult(scorePercent, minutesAwarded)
@@ -138,6 +140,24 @@ class QuizRepository(private val db: AppDatabase) {
      * earned time, instead of leaving the child stuck in Learn to Play with no obvious next step. */
     suspend fun getEnabledGatedApps() = db.gatedAppDao().getEnabledApps()
 
-    suspend fun getTimeBankMinutesRemaining(): Int =
-        ((db.adminSettingsDao().getOnce()?.timeBankSecondsRemaining ?: 0L) / 60L).toInt()
+    /** Raw seconds rather than whole minutes, so "under a minute left" can be told apart from
+     * "nothing left" — the old minutes-only version reported 0 for 1-59 s while apps were in
+     * fact still unlocked. */
+    suspend fun getTimeBankSecondsRemaining(): Long =
+        db.adminSettingsDao().getOnce()?.timeBankSecondsRemaining ?: 0L
+
+    /** The Allowed Hours window as (startMinute, endMinute) if a parent has it switched on AND
+     * the current time falls outside it; null when there's no schedule or we're inside it. Lets
+     * the quiz-complete screen avoid offering "Play now" for apps that would only show the
+     * "Not right now" lock. */
+    suspend fun getAllowedHoursIfCurrentlyOutside(): Pair<Int, Int>? {
+        val settings = db.adminSettingsDao().getOnce() ?: return null
+        if (!settings.allowedWindowEnabled) return null
+        val inside = AllowedWindowChecker.isWithinWindow(
+            AllowedWindowChecker.currentMinuteOfDay(),
+            settings.allowedWindowStartMinute,
+            settings.allowedWindowEndMinute
+        )
+        return if (inside) null else settings.allowedWindowStartMinute to settings.allowedWindowEndMinute
+    }
 }

@@ -13,6 +13,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.learntoplay.app.accessibility.AppLockAccessibilityService
 import com.learntoplay.app.data.db.AppDatabase
 import com.learntoplay.app.data.repository.TimeBankRepository
 import com.learntoplay.app.remote.FamilySyncRepository
@@ -20,8 +21,9 @@ import kotlinx.coroutines.*
 
 /**
  * Foreground service that ticks down the child's earned time bank once per second
- * while a gated app is in the foreground AND the screen is on. When the bank hits zero
- * it re-locks (AppLockAccessibilityService picks this up on the next window-state event).
+ * while a gated app is in the foreground AND the screen is on. When the bank hits zero it
+ * asks AppLockAccessibilityService to re-check the current app straight away, so the lock
+ * appears over the app the child is still in rather than on their next app switch.
  *
  * Must call startForeground() promptly after being started via startForegroundService(),
  * or Android kills it before the tick loop ever runs (silently on most versions, with a
@@ -38,8 +40,7 @@ import kotlinx.coroutines.*
  * daily curfew window a parent can set (see TimeBankRepository.isOutsideAllowedWindow) — if
  * the window closes mid-session (e.g. bedtime arrives while the child is still playing), the
  * tick loop stops itself rather than keep spending a balance that shouldn't be spendable right
- * now. Like the balance case, the lock overlay itself only reappears on the next window-state
- * event (AppLockAccessibilityService) — an accepted MVP limitation, not new to this check.
+ * now, and triggers the same immediate re-check as the balance case.
  *
  * Remote sync: pushes to Firestore every SYNC_INTERVAL_TICKS seconds (not every tick — that
  * would be a write per second, wasteful and pointless for a parent glancing at their phone
@@ -97,6 +98,8 @@ class TimeBankTrackerService : Service() {
 
                 if (repo.isOutsideAllowedWindow()) {
                     Log.d(TAG, "outside allowed hours — stopping tick loop")
+                    // Lock the app the child is in right now — don't wait for them to switch.
+                    AppLockAccessibilityService.recheckForegroundApp()
                     FamilySyncRepository.pushSnapshot(applicationContext, db)
                     stopSelf()
                     break
@@ -105,6 +108,8 @@ class TimeBankTrackerService : Service() {
                 val remaining = repo.getBalanceSeconds()
                 if (remaining <= 0) {
                     Log.d(TAG, "balance hit 0 — stopping tick loop")
+                    // Lock the app the child is in right now — don't wait for them to switch.
+                    AppLockAccessibilityService.recheckForegroundApp()
                     FamilySyncRepository.pushSnapshot(applicationContext, db)
                     stopSelf()
                     break

@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.learntoplay.app.FeatureFlags
 import com.learntoplay.app.ai.QuestionAiGenerator
 import com.learntoplay.app.data.db.entities.QuestionEntity
 import com.learntoplay.app.data.db.entities.QuestionType
@@ -266,7 +267,7 @@ fun ManageQuestionsScreen(
                 }
                 // Hidden in the MVP build — see FeatureFlags.AI_QUESTION_TOOLS. Manual entry via
                 // the "+" button below is the only way to add questions there.
-                if (com.learntoplay.app.FeatureFlags.AI_QUESTION_TOOLS) {
+                if (FeatureFlags.AI_QUESTION_TOOLS) {
                     TextButton(onClick = { launchScan() }, enabled = !scanBusy && !topicBusy) { Text("Scan Photo") }
                     TextButton(onClick = { showTopicDialog = true }, enabled = !scanBusy && !topicBusy) { Text("From Topic") }
                 }
@@ -323,11 +324,16 @@ fun ManageQuestionsScreen(
 
         if (questions.isEmpty()) {
             Text(
-                "No questions yet. Tap + to type one, Scan Photo to take a picture of a " +
-                    "textbook page (you can scan several pages of the same topic before " +
-                    "generating) and have the AI write new comprehension questions about it, " +
-                    "or From Topic to draft a whole batch from just a topic name — a handful " +
-                    "is enough for a quiz to run.",
+                if (FeatureFlags.AI_QUESTION_TOOLS)
+                    "No questions yet. Tap + to type one, Scan Photo to take a picture of a " +
+                        "textbook page (you can scan several pages of the same topic before " +
+                        "generating) and have the AI write new comprehension questions about it, " +
+                        "or From Topic to draft a whole batch from just a topic name — a handful " +
+                        "is enough for a quiz to run."
+                else
+                    "No questions yet. Tap + to type one. Add at least 5 (including one " +
+                        "fill-in-the-blank) so each quiz has a full set — more is better, so " +
+                        "quizzes don't repeat.",
                 style = MaterialTheme.typography.bodyMedium
             )
         } else {
@@ -762,45 +768,49 @@ private fun QuestionEditDialog(
                     Text(
                         "Checked leniently — capitalization, spacing, and punctuation don't " +
                             "have to match exactly, but the child still has to type the right " +
-                            "word(s). Use Scan Photo or From Topic if you'd like the AI to " +
-                            "draft one of these for you instead.",
+                            "word(s)." + if (FeatureFlags.AI_QUESTION_TOOLS)
+                                " Use Scan Photo or From Topic if you'd like the AI to draft one " +
+                                    "of these for you instead." else "",
                         style = MaterialTheme.typography.labelSmall
                     )
                 } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(
-                            enabled = prompt.isNotBlank() && !aiBusy,
-                            onClick = {
-                                aiBusy = true
-                                aiError = null
-                                coroutineScope.launch {
-                                    when (val result = QuestionAiGenerator.generateOptions(context, prompt)) {
-                                        is QuestionAiGenerator.Result.Success -> {
-                                            optionA = result.options[0]
-                                            optionB = result.options[1]
-                                            optionC = result.options[2]
-                                            optionD = result.options[3]
-                                            correctOption = "ABCD"[result.correctIndex].toString()
+                    // Hidden in the MVP build — see FeatureFlags.AI_QUESTION_TOOLS.
+                    if (FeatureFlags.AI_QUESTION_TOOLS) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                enabled = prompt.isNotBlank() && !aiBusy,
+                                onClick = {
+                                    aiBusy = true
+                                    aiError = null
+                                    coroutineScope.launch {
+                                        when (val result = QuestionAiGenerator.generateOptions(context, prompt)) {
+                                            is QuestionAiGenerator.Result.Success -> {
+                                                optionA = result.options[0]
+                                                optionB = result.options[1]
+                                                optionC = result.options[2]
+                                                optionD = result.options[3]
+                                                correctOption = "ABCD"[result.correctIndex].toString()
+                                            }
+                                            is QuestionAiGenerator.Result.Unavailable -> {
+                                                aiError = result.reason
+                                            }
                                         }
-                                        is QuestionAiGenerator.Result.Unavailable -> {
-                                            aiError = result.reason
-                                        }
+                                        aiBusy = false
                                     }
-                                    aiBusy = false
                                 }
+                            ) { Text(if (aiBusy) "Generating…" else "Generate options with AI") }
+                            if (aiBusy) {
+                                Spacer(Modifier.width(8.dp))
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                             }
-                        ) { Text(if (aiBusy) "Generating…" else "Generate options with AI") }
-                        if (aiBusy) {
-                            Spacer(Modifier.width(8.dp))
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                         }
-                    }
-                    aiError?.let { message ->
-                        Text(
-                            message,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
+                        aiError?.let { message ->
+                            Text(
+                                message,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
                     }
                     Spacer(Modifier.height(4.dp))
 
@@ -810,8 +820,11 @@ private fun QuestionEditDialog(
                     OptionRow("D", optionD, { optionD = it }, correctOption == "D") { correctOption = "D" }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Tap the circle next to the correct answer. AI-drafted options are a " +
-                            "starting point — always double-check them before saving.",
+                        "Tap the circle next to the correct answer. The order doesn't matter " +
+                            "— options are shuffled each time the quiz shows this question." +
+                            if (FeatureFlags.AI_QUESTION_TOOLS)
+                                " AI-drafted options are a starting point — always double-check " +
+                                    "them before saving." else "",
                         style = MaterialTheme.typography.labelSmall
                     )
                 }

@@ -57,7 +57,6 @@ fun AppNavGraph(
     val adminViewModel: AdminViewModel =
         viewModel(factory = simpleFactory { AdminViewModel(db, appContext) })
     val settings by db.adminSettingsDao().observe().collectAsState(initial = null)
-    val minutesRemaining = ((settings?.timeBankSecondsRemaining ?: 0L) / 60L).toInt()
 
     // Overlay's "Start quiz" button relaunches MainActivity with EXTRA_OPEN_QUIZ; jump straight
     // to the quiz screen instead of making the child tap through Child Home again.
@@ -85,7 +84,10 @@ fun AppNavGraph(
     NavHost(navController = navController, startDestination = Routes.CHILD_HOME) {
         composable(Routes.CHILD_HOME) {
             ChildHomeScreen(
-                timeBankMinutesRemaining = minutesRemaining,
+                timeBankSecondsRemaining = settings?.timeBankSecondsRemaining ?: 0L,
+                allowedHours = settings
+                    ?.takeIf { it.allowedWindowEnabled }
+                    ?.let { it.allowedWindowStartMinute to it.allowedWindowEndMinute },
                 onStartQuiz = { navController.navigate(Routes.QUIZ) },
                 onOpenAdmin = { navController.navigate(Routes.ADMIN_PIN) }
             )

@@ -197,6 +197,15 @@ fun AdminDashboardScreen(
                         modifier = Modifier.weight(1f)
                     ) { Text("To ${AllowedWindowChecker.format12Hour(allowedWindow.endMinute)}") }
                 }
+                if (allowedWindow.enabled && allowedWindow.startMinute == allowedWindow.endMinute) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "From and To are the same time, so gated apps will stay locked all day. " +
+                            "Pick a different end time.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
                 if (allowedWindow.enabled && allowedWindow.startMinute > allowedWindow.endMinute) {
                     Spacer(Modifier.height(4.dp))
                     Text(

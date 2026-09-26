@@ -257,8 +257,7 @@ object FamilySyncRepository {
             RemoteCommandType.ADD_TIME -> {
                 val addSeconds = (minutes ?: 0).coerceAtLeast(0).toLong() * 60L
                 if (addSeconds <= 0L) return
-                val current = timeBankRepo.getBalanceSeconds()
-                timeBankRepo.setBalanceSeconds(current + addSeconds)
+                timeBankRepo.addSeconds(addSeconds)
             }
             RemoteCommandType.LOCK_NOW -> timeBankRepo.setBalanceSeconds(0L)
         }

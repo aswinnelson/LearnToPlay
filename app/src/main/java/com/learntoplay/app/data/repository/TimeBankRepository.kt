@@ -29,9 +29,14 @@ class TimeBankRepository(private val db: AppDatabase) {
     suspend fun ruleForScore(scorePercent: Int): ScoreTimeRuleEntity? =
         ScoreTimeCalculator.ruleForScore(scorePercent, getRules())
 
+    /** Atomic, floored at zero — see AdminSettingsDao.spendSeconds for why this is done in SQL. */
     suspend fun spendSeconds(seconds: Long) {
-        val current = db.adminSettingsDao().getOnce()?.timeBankSecondsRemaining ?: 0L
-        db.adminSettingsDao().setTimeBankSeconds(ScoreTimeCalculator.clampNonNegative(current - seconds))
+        db.adminSettingsDao().spendSeconds(seconds)
+    }
+
+    /** Atomic increment — see AdminSettingsDao.addSeconds. */
+    suspend fun addSeconds(seconds: Long) {
+        if (seconds > 0) db.adminSettingsDao().addSeconds(seconds)
     }
 
     suspend fun getBalanceSeconds(): Long =
